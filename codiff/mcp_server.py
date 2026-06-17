@@ -39,10 +39,11 @@ Show the structural call-graph diff of the current Python codebase against a
 base git reference.
 
 WHEN TO CALL
-Call this tool AFTER making code changes and BEFORE committing. Use it to show
-the user what was architecturally changed — not a line diff, but a
-function-level view of how the call graph was rewired. The output is rendered
-directly in the user's terminal with full colors and formatting.
+Call this tool at the END of every response in which you created, edited, or
+deleted any Python file. Do not wait for a commit — show the structural diff
+immediately so the user can see what changed architecturally after each of
+your responses. The output is rendered directly in the user's terminal with
+full colors and formatting.
 
 OUTPUT FORMAT
 The output is split into two top-level groups: Source and Tests.
