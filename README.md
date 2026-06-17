@@ -1,144 +1,74 @@
-# codebot
+# codiff
 
-A semantic code search MCP tool for any Python codebase, built to work with coding agents. It uses Graph RAG techniques, combining vector search with a call graph, to return ranked, contextually connected results rather than flat keyword matches.
-
-For more information about the solution, check the following [Medium article](https://medium.com/@intuitivedl/codebot-context-engineering-for-coding-agents-1f2bc6edbe33)
+A structural call-graph diff tool for Python codebases, built to work with coding agents. Instead of a line diff, it shows what changed at the function level — which functions were added and where they hook into existing code, which were modified, which were removed — organized by file and class, with color-coded call chains.
 
 ## How it works
 
-On first launch it parses the target codebase, builds a call graph, and generates embeddings for every function. A background file watcher then monitors the directory for changes: when the coding agent edits files, only the affected functions are re-parsed and re-embedded, keeping the index always fresh without a full re-index.
-
-Search tools block automatically if a re-index is in progress, so the agent always queries a consistent index.
+codiff snapshots the Python call graph at two states (e.g. HEAD vs working tree), computes the node and edge delta, and derives structural facts: added/modified/removed functions, signature changes, orphaned functions, and high fan-in edits. Every fact is computed deterministically from the resolved call graph — no LLM, no embeddings, fully offline.
 
 ## Requirements
 
 - Python 3.11+
-- A [Voyage AI](https://www.voyageai.com) API key (a generous free tier is available)
+- Git
 
 ## Installation
 
 ```bash
-pip install git+https://github.com/InkyLabAI/codebot_mcp.git
+pip install codiff          # CLI only
+pip install "codiff[mcp]"   # CLI + MCP server for coding agents
 ```
 
+## Usage
 
-## Setup
-
-### 1. Get a Voyage AI API key
-
-Sign up at [voyageai.com](https://www.voyageai.com) and copy your API key.
-
-### 2. Run `init` in your project
+### CLI
 
 ```bash
-codebot init --agent claude --voyage-api-key <YOUR-KEY>
+codiff diff                        # diff HEAD vs working tree
+codiff diff --base main            # diff a specific base ref
+codiff diff --repo /path/to/repo   # diff a different repo
 ```
 
-This creates three files:
+### MCP integration (Claude Code)
 
-| File | Purpose |
+Run once in any Python project you want to use codiff with:
+
+```bash
+codiff init --agent claude
+```
+
+This writes `.mcp.json` into the project root, registering the `codiff-mcp` server. Restart Claude Code — the `codiff_diff` tool is then available to the agent.
+
+The agent calls `codiff_diff` automatically before committing. The full colored output renders directly in your terminal, identical to `codiff diff`.
+
+## Reading the output
+
+The output is grouped into **Source** and **Tests**, each with Added, Modified, and Removed tables.
+
+**Added — `← Caller / → Callee` column**
+
+| Value | Meaning |
 |---|---|
-| `.mcp.json` | Tells the agent how to launch codebot |
-| `.env` | Stores your Voyage AI API key (written automatically when `--voyage-api-key` is passed) |
-| `CLAUDE.md` | Instructions telling the agent when and how to use codebot |
+| `entry point` | Nothing calls this function — new public surface |
+| `← caller` | An existing function that now calls this new function (the hook-in point) |
+| `→ callee` | A function this new function calls |
 
+White names = existing code. Gray names = also new in this diff.
 
-### 3. Open your agent
+**Modified — `Changes` column**
 
-The agent reads `.mcp.json` and `CLAUDE.md` on startup. On the first launch the index is built (parsing + embedding the codebase) before the server becomes available. Subsequent launches start in seconds.
+| Value | Meaning |
+|---|---|
+| `body changed` | Implementation changed, same signature and calls |
+| `+ callee` | Now calls callee |
+| `- callee` | No longer calls callee |
+| `was (...) → now (...)` | Signature changed |
 
-That's it.
+**Chain colors**
 
----
+Functions that form a connected call chain share a color throughout the output — in both the Function column and every Caller/Callee reference. All cyan names belong to one chain, all magenta to another. Gray = pre-existing code. White = new but isolated.
 
-### Other agents
+**Ordering**
 
-```bash
-codebot init --agent cursor    # creates .cursor/rules
-codebot init --agent windsurf  # creates .windsurfrules
-codebot init --agent cline     # creates .clinerules
-codebot init --agent vibe      # creates .vibe/config.toml and .vibe/AGENTS.md
-codebot init --agent copilot   # creates .github/copilot-instructions.md
-```
+Within each file/class block, entry points appear first, then their callees in depth-first order so each chain reads top-to-bottom.
 
-If a rules file already exists, the codebot section is appended rather than overwriting the file.
-
----
-
-## Tools and endpoints
-
-The MCP server, REST server, and CLI all expose the same capabilities.
-
-### Codebase overview
-
-**MCP:** `get_codebase_overview()`
-**CLI:** `codebot overview`
-
-Returns a high-level map of the codebase: the major modules, what each one does, and key entry-point functions. Derived from the call graph using community detection — no LLM or API key beyond Voyage AI required.
-
-Call this once at the start of a session before writing search queries. The agent rules generated by `codebot init` instruct the agent to do this automatically. The result is cached in the index after the first call; pass `--refresh` (CLI) or `refresh=True` (MCP) to recompute.
-
-### Search
-
-**MCP:** `search_code(query, exclude_tests=True)`
-**REST:** `GET /search?q=...&exclude_tests=true`
-**CLI:** `codebot search "query"` — shallow tree (roots + direct callees)
-**CLI:** `codebot search-tree "query"` — full call tree at all depths
-
-Finds functions by natural language description. Returns a ranked call tree with entry points and their callees.
-
-MCP and `codebot search` return a shallow tree (depth 1) with `(+N more)` indicators for deeper nodes; `codebot search-tree` expands every level. REST returns structured JSON.
-
-### Lookup
-
-**MCP:** `lookup_function(names, file_path=None)`
-**REST:** `GET /lookup?names=...&file_path=...`
-**CLI:** `codebot lookup "names" [--file substring]`
-
-Retrieves full source code for one or more functions or classes. Accepts comma-separated names in `ClassName.method`, `function_name`, or `ClassName` format.
-
-### Expand
-
-**MCP:** `expand_function(function_id)`
-**REST:** `GET /expand?function_id=...`
-**CLI:** `codebot expand "function_id"`
-
-Shows the direct callees of a function within the last search result. Requires a prior `search_code` / `codebot search` call (the result is cached to disk between sessions).
-
-### Health (REST only)
-
-`GET /health` — returns server status and whether an indexing job is currently running.
-
-### CLI examples
-
-All commands default `--repo` to the current directory:
-
-```bash
-codebot overview                 # map of codebase components (cached after first run)
-codebot overview --refresh       # recompute the overview
-
-codebot search "hybrid search combining semantic and BM25 results"
-codebot search "how embeddings are generated" --repo /path/to/project --include-tests
-
-codebot search-tree "how embeddings are generated"  # full call tree at all depths
-
-codebot lookup "MyClass"
-codebot lookup "ClassName.method, other_function" --file src/utils
-
-codebot expand "module.path.ClassName.method_name"
-```
-
----
-
-## Automatic index updates
-
-The server watches the project directory for `.py` file changes using a 2.5-second debounce window that coalesces rapid successive edits (common during active agent sessions) into a single re-index job. Only changed functions are re-parsed and re-embedded — not the whole codebase.
-
-On restart, the server detects any files that changed while it was offline and re-indexes them before serving the first query.
-
-## Gitignore-aware indexing
-
-The indexer respects your project's `.gitignore`: directories listed there are skipped during the initial index build and incremental updates. This keeps vendored dependencies, generated files, and other ignored directories out of the search index.
-
----
-
+**Issues** (bottom of output) flags: signature changes with callers not yet updated, newly orphaned functions, high fan-in edits.
