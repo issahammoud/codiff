@@ -13,6 +13,7 @@ Configure in Claude Code (.mcp.json in the project root):
 """
 
 import sys
+from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from rich.console import Console
@@ -85,7 +86,11 @@ ISSUES section flags things that may need attention:
 
 
 @mcp.tool(description=_DESCRIPTION)
-def codiff_diff(repo_path: str = ".", base_ref: str = "HEAD") -> str:
+def codiff_diff(
+    repo_path: str = ".",
+    base_ref: str = "HEAD",
+    head_ref: Optional[str] = None,
+) -> str:
     """Render the structural call-graph diff directly to the user's terminal."""
     import os
 
@@ -93,16 +98,20 @@ def codiff_diff(repo_path: str = ".", base_ref: str = "HEAD") -> str:
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import db_path_for, ensure_indexed
     from codiff.diff.render import render
-    from codiff.diff.snapshot import build_from_path, load_from_db
+    from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
 
     repo_path = os.path.abspath(repo_path)
-    ensure_indexed(repo_path, base_ref)
-    db = db_path_for(repo_path)
-    base = load_from_db(db)
-    head = build_from_path(repo_path)
+    if head_ref is not None:
+        base = build_from_ref(repo_path, base_ref)
+        head = build_from_ref(repo_path, head_ref)
+    else:
+        ensure_indexed(repo_path, base_ref)
+        db = db_path_for(repo_path)
+        base = load_from_db(db)
+        head = build_from_path(repo_path)
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
-    render(result, base_ref=base_ref)
+    render(result, base_ref=base_ref, head_ref=head_ref or "working tree")
     return ""
 
 

@@ -3,7 +3,7 @@
 All tests use synthetic GraphSnapshot fixtures — no DB, no real repo, no git.
 """
 
-from codiff.diff.analysis import HIGH_FAN_IN_THRESHOLD, analyze
+from codiff.diff.analysis import analyze
 from codiff.diff.differ import _node_changed, diff_snapshots
 from codiff.diff.snapshot import GraphSnapshot, NodeInfo
 
@@ -341,92 +341,3 @@ class TestRemoved:
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
         assert result.removed[0].file_path == "src/mod.py"
-
-
-# ---------------------------------------------------------------------------
-# analysis tests — issues
-# ---------------------------------------------------------------------------
-
-
-class TestIssues:
-    def test_signature_change_with_unreconciled_callers(self):
-        base = _snapshot(
-            _node("mod.caller", calls=["mod.fn"]),
-            _node("mod.fn", parameters=[{"name": "x", "type": "int", "value": None}]),
-        )
-        head = _snapshot(
-            _node("mod.caller", calls=["mod.fn"]),  # not updated
-            _node("mod.fn", parameters=[{"name": "x", "type": "str", "value": None}]),
-        )
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        matching = [
-            i for i in result.issues if i.function_id == "mod.fn" and "not updated" in i.message
-        ]
-        assert len(matching) == 1
-
-    def test_no_issue_when_caller_also_updated(self):
-        base = _snapshot(
-            _node("mod.caller", calls=["mod.fn"]),
-            _node("mod.fn", parameters=[{"name": "x", "type": "int", "value": None}]),
-        )
-        head = _snapshot(
-            _node("mod.caller", calls=["mod.fn"], code="updated"),
-            _node("mod.fn", parameters=[{"name": "x", "type": "str", "value": None}]),
-        )
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        matching = [i for i in result.issues if "not updated" in i.message]
-        assert not matching
-
-    def test_newly_orphaned_in_issues(self):
-        base = _snapshot(
-            _node("mod.caller", calls=["mod.fn"]),
-            _node("mod.fn"),
-        )
-        head = _snapshot(
-            _node("mod.caller"),  # dropped call to mod.fn
-            _node("mod.fn"),
-        )
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        matching = [
-            i for i in result.issues if i.function_id == "mod.fn" and "orphaned" in i.message
-        ]
-        assert len(matching) == 1
-
-    def test_not_orphaned_if_still_has_caller(self):
-        base = _snapshot(
-            _node("mod.a", calls=["mod.fn"]),
-            _node("mod.b", calls=["mod.fn"]),
-            _node("mod.fn"),
-        )
-        head = _snapshot(
-            _node("mod.a"),  # drops call
-            _node("mod.b", calls=["mod.fn"]),
-            _node("mod.fn"),
-        )
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        matching = [
-            i for i in result.issues if i.function_id == "mod.fn" and "orphaned" in i.message
-        ]
-        assert not matching
-
-    def test_high_fan_in_in_issues(self):
-        callers = [_node(f"mod.c{i}", calls=["mod.fn"]) for i in range(HIGH_FAN_IN_THRESHOLD)]
-        base = _snapshot(_node("mod.fn"), *callers)
-        head = _snapshot(_node("mod.fn", code="changed"), *callers)
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        matching = [i for i in result.issues if i.function_id == "mod.fn" and "fan-in" in i.message]
-        assert len(matching) == 1
-
-    def test_low_fan_in_not_in_issues(self):
-        callers = [_node(f"mod.c{i}", calls=["mod.fn"]) for i in range(HIGH_FAN_IN_THRESHOLD - 1)]
-        base = _snapshot(_node("mod.fn"), *callers)
-        head = _snapshot(_node("mod.fn", code="changed"), *callers)
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        matching = [i for i in result.issues if "fan-in" in i.message]
-        assert not matching

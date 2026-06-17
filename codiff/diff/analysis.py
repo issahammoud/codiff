@@ -67,25 +67,16 @@ class RemovedFunctionInfo:
 
 
 @dataclass
-class IssueItem:
-    function_id: str
-    message: str
-
-
-@dataclass
 class AnalysisResult:
     summary: SummaryStats
     added: list[AddedFunctionInfo]
     modified: list[ModifiedFunctionInfo]
     removed: list[RemovedFunctionInfo]
-    issues: list[IssueItem]
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-
-HIGH_FAN_IN_THRESHOLD = 5
 
 
 def analyze(
@@ -97,15 +88,12 @@ def analyze(
 
     base_reverse = _reverse_index(base)
     head_reverse = _reverse_index(head)
-    base_in_deg = {fid: len(callers) for fid, callers in base_reverse.items()}
-    head_in_deg = {fid: len(callers) for fid, callers in head_reverse.items()}
 
     return AnalysisResult(
         summary=_summary(diff),
         added=_added(diff, added_ids, head, head_reverse),
         modified=_modified(diff, added_ids, base, head, head_reverse),
         removed=_removed(diff, base_reverse),
-        issues=_issues(diff, head, head_reverse, base_in_deg, head_in_deg),
     )
 
 
@@ -221,52 +209,3 @@ def _removed(
             )
         )
     return result
-
-
-def _issues(
-    diff: GraphDiff,
-    head: GraphSnapshot,
-    head_reverse: dict[str, set[str]],
-    base_in_deg: dict[str, int],
-    head_in_deg: dict[str, int],
-) -> list[IssueItem]:
-    issues: list[IssueItem] = []
-    changed_ids = set(diff.added_nodes) | set(diff.removed_nodes) | set(diff.modified_nodes)
-
-    for fid, (old, new) in diff.modified_nodes.items():
-        if old.parameters == new.parameters and old.return_type == new.return_type:
-            continue
-        unreconciled = [c for c in head_reverse.get(fid, set()) if c not in changed_ids]
-        if unreconciled:
-            n = len(unreconciled)
-            issues.append(
-                IssueItem(
-                    function_id=fid,
-                    message=f"signature changed — {n} caller{'s' if n > 1 else ''} not updated",
-                )
-            )
-
-    for fid, (old, new) in diff.modified_nodes.items():
-        if base_in_deg.get(fid, 0) >= HIGH_FAN_IN_THRESHOLD:
-            deg = base_in_deg[fid]
-            issues.append(
-                IssueItem(
-                    function_id=fid,
-                    message=f"high fan-in edit ({deg} callers in base)",
-                )
-            )
-
-    for fid in head.nodes:
-        if (
-            fid not in diff.added_nodes
-            and base_in_deg.get(fid, 0) > 0
-            and head_in_deg.get(fid, 0) == 0
-        ):
-            issues.append(
-                IssueItem(
-                    function_id=fid,
-                    message="lost all callers (newly orphaned)",
-                )
-            )
-
-    return sorted(issues, key=lambda i: i.function_id)

@@ -24,7 +24,6 @@ from rich.table import Table
 from codiff.diff.analysis import (
     AddedFunctionInfo,
     AnalysisResult,
-    IssueItem,
     ModifiedFunctionInfo,
     RemovedFunctionInfo,
 )
@@ -292,11 +291,11 @@ def _render_summary(result: AnalysisResult) -> None:
 # ---------------------------------------------------------------------------
 
 
-def render(result: AnalysisResult, base_ref: str = "HEAD") -> None:
+def render(result: AnalysisResult, base_ref: str = "HEAD", head_ref: str = "working tree") -> None:
     """Print the full structural diff report."""
     console.print()
     console.rule(
-        f"[bold cyan]codiff[/bold cyan]  [dim]{base_ref}[/dim] [dim]→[/dim] working tree",
+        f"[bold cyan]codiff[/bold cyan]  [dim]{base_ref}[/dim] [dim]→[/dim] {head_ref}",
         style="cyan",
     )
     _render_summary(result)
@@ -312,7 +311,6 @@ def render(result: AnalysisResult, base_ref: str = "HEAD") -> None:
 
     _render_group("Source", src_added, src_modified, src_removed, color_map)
     _render_group("Tests", tst_added, tst_modified, tst_removed, color_map)
-    _render_issues(result.issues)
     console.print()
 
 
@@ -482,7 +480,9 @@ def _removed_extra_cells(fn: RemovedFunctionInfo) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def render_to_string(result: AnalysisResult, base_ref: str = "HEAD") -> str:
+def render_to_string(
+    result: AnalysisResult, base_ref: str = "HEAD", head_ref: str = "working tree"
+) -> str:
     """Return the rendered diff report as a plain-text string (no ANSI colors)."""
     from io import StringIO
 
@@ -492,20 +492,7 @@ def render_to_string(result: AnalysisResult, base_ref: str = "HEAD") -> str:
     _old = console
     console = cap
     try:
-        render(result, base_ref)
+        render(result, base_ref, head_ref)
     finally:
         console = _old
     return buf.getvalue()
-
-
-def _render_issues(issues: list[IssueItem]) -> None:
-    if not issues:
-        return
-    console.print()
-    console.rule("[bold]Issues[/bold]", style="dim")
-    console.print()
-    for issue in issues:
-        console.print(
-            f"  [bold red]⚠[/bold red]  [yellow]{_lbl(issue.function_id)}[/yellow]"
-            f" — {issue.message}"
-        )
