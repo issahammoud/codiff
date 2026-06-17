@@ -78,10 +78,7 @@ ORDERING
 Within each (file, class) block, entry points appear first, then their
 callees in depth-first order so each call chain reads top-to-bottom.
 
-ISSUES section flags things that may need attention:
-  • Signature changes with callers not yet updated
-  • Functions that lost all callers (newly orphaned)
-  • High fan-in edits (a heavily-used function was modified)
+By default, test functions are excluded. Pass include_tests=True to show them.
 """
 
 
