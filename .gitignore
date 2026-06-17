@@ -1,0 +1,26 @@
+# Database
+.codiff.db
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Env
+.env
+.venv/
+venv/
+
+# Mypy / ruff caches
+.mypy_cache/
+.ruff_cache/
+
+# Pytest
+.pytest_cache/
