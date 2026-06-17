@@ -24,7 +24,6 @@ from rich.table import Table
 from codiff.diff.analysis import (
     AddedFunctionInfo,
     AnalysisResult,
-    IssueItem,
     ModifiedFunctionInfo,
     RemovedFunctionInfo,
 )
@@ -269,20 +268,24 @@ def _add_grouped_rows(
 # ---------------------------------------------------------------------------
 
 
-def _render_summary(result: AnalysisResult) -> None:
-    s = result.summary
-    total = s.added_functions + s.removed_functions + s.modified_functions
+def _render_summary(
+    added: list,
+    modified: list,
+    removed: list,
+) -> None:
+    total = len(added) + len(modified) + len(removed)
     if total == 0:
         console.print("\n  [dim]No structural changes detected.[/dim]")
         return
     parts: list[str] = []
-    if s.added_functions:
-        parts.append(f"[green]+{s.added_functions} added[/green]")
-    if s.modified_functions:
-        parts.append(f"[yellow]~{s.modified_functions} modified[/yellow]")
-    if s.removed_functions:
-        parts.append(f"[red]-{s.removed_functions} removed[/red]")
-    n = len(s.modules_touched)
+    if added:
+        parts.append(f"[green]+{len(added)} added[/green]")
+    if modified:
+        parts.append(f"[yellow]~{len(modified)} modified[/yellow]")
+    if removed:
+        parts.append(f"[red]-{len(removed)} removed[/red]")
+    modules = {fn.file_path for fn in added + modified + removed}
+    n = len(modules)
     parts.append(f"[dim]{n} module{'s' if n != 1 else ''}[/dim]")
     console.print("  " + "  ·  ".join(parts))
 
@@ -292,27 +295,41 @@ def _render_summary(result: AnalysisResult) -> None:
 # ---------------------------------------------------------------------------
 
 
-def render(result: AnalysisResult, base_ref: str = "HEAD") -> None:
+def render(
+    result: AnalysisResult,
+    base_ref: str = "HEAD",
+    head_ref: str = "working tree",
+    include_tests: bool = False,
+) -> None:
     """Print the full structural diff report."""
     console.print()
     console.rule(
-        f"[bold cyan]codiff[/bold cyan]  [dim]{base_ref}[/dim] [dim]→[/dim] working tree",
+        f"[bold cyan]codiff[/bold cyan]  [dim]{base_ref}[/dim] [dim]→[/dim] {head_ref}",
         style="cyan",
     )
-    _render_summary(result)
+
+    src_added = _partition(result.added, test=False)
+    src_modified = _partition(result.modified, test=False)
+    src_removed = _partition(result.removed, test=False)
+
+    if include_tests:
+        tst_added = _partition(result.added, test=True)
+        tst_modified = _partition(result.modified, test=True)
+        tst_removed = _partition(result.removed, test=True)
+    else:
+        tst_added = tst_modified = tst_removed = []
+
+    visible_added = src_added + tst_added
+    visible_modified = src_modified + tst_modified
+    visible_removed = src_removed + tst_removed
+
+    _render_summary(visible_added, visible_modified, visible_removed)
 
     color_map = _build_color_map(result)
 
-    src_added = _partition(result.added, test=False)
-    tst_added = _partition(result.added, test=True)
-    src_modified = _partition(result.modified, test=False)
-    tst_modified = _partition(result.modified, test=True)
-    src_removed = _partition(result.removed, test=False)
-    tst_removed = _partition(result.removed, test=True)
-
     _render_group("Source", src_added, src_modified, src_removed, color_map)
-    _render_group("Tests", tst_added, tst_modified, tst_removed, color_map)
-    _render_issues(result.issues)
+    if include_tests:
+        _render_group("Tests", tst_added, tst_modified, tst_removed, color_map)
     console.print()
 
 
@@ -482,7 +499,12 @@ def _removed_extra_cells(fn: RemovedFunctionInfo) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def render_to_string(result: AnalysisResult, base_ref: str = "HEAD") -> str:
+def render_to_string(
+    result: AnalysisResult,
+    base_ref: str = "HEAD",
+    head_ref: str = "working tree",
+    include_tests: bool = False,
+) -> str:
     """Return the rendered diff report as a plain-text string (no ANSI colors)."""
     from io import StringIO
 
@@ -492,20 +514,7 @@ def render_to_string(result: AnalysisResult, base_ref: str = "HEAD") -> str:
     _old = console
     console = cap
     try:
-        render(result, base_ref)
+        render(result, base_ref, head_ref, include_tests)
     finally:
         console = _old
     return buf.getvalue()
-
-
-def _render_issues(issues: list[IssueItem]) -> None:
-    if not issues:
-        return
-    console.print()
-    console.rule("[bold]Issues[/bold]", style="dim")
-    console.print()
-    for issue in issues:
-        console.print(
-            f"  [bold red]⚠[/bold red]  [yellow]{_lbl(issue.function_id)}[/yellow]"
-            f" — {issue.message}"
-        )

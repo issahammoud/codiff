@@ -43,6 +43,18 @@ def main():
         help="Base git ref to compare against (default: HEAD)",
     )
     diff_parser.add_argument(
+        "--head",
+        default=None,
+        metavar="GIT_REF",
+        help="Head git ref to compare to (default: working tree)",
+    )
+    diff_parser.add_argument(
+        "--include-tests",
+        action="store_true",
+        default=False,
+        help="Include test functions in the diff output (hidden by default)",
+    )
+    diff_parser.add_argument(
         "--repo",
         default=".",
         metavar="PATH",
@@ -83,7 +95,12 @@ def main():
         setup_repository(args.repo_path)
 
     elif args.command == "diff":
-        _run_diff(repo_path=args.repo, base_ref=args.base)
+        _run_diff(
+            repo_path=args.repo,
+            base_ref=args.base,
+            head_ref=args.head,
+            include_tests=args.include_tests,
+        )
 
     elif args.command == "init":
         _run_init(repo_path=args.repo, agent=args.agent)
@@ -124,25 +141,38 @@ def _init_claude(repo_path: str) -> None:
     print("\n  Restart Claude Code to load the new MCP server.\n")
 
 
-def _run_diff(repo_path: str, base_ref: str) -> None:
+def _run_diff(
+    repo_path: str,
+    base_ref: str,
+    head_ref: str | None = None,
+    include_tests: bool = False,
+) -> None:
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import db_path_for, ensure_indexed
     from codiff.diff.render import render
-    from codiff.diff.snapshot import build_from_path, load_from_db
+    from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
 
     repo_path = os.path.abspath(repo_path)
 
-    logging.getLogger(__name__).info("Ensuring base index for %s at %s", repo_path, base_ref)
-    ensure_indexed(repo_path, base_ref)
-
-    db = db_path_for(repo_path)
-    base = load_from_db(db)
-    head = build_from_path(repo_path)
+    if head_ref is not None:
+        # Both sides are git refs — use git archive for both, skip the DB.
+        logging.getLogger(__name__).info("Diffing %s → %s", base_ref, head_ref)
+        base = build_from_ref(repo_path, base_ref)
+        head = build_from_ref(repo_path, head_ref)
+    else:
+        # Head is the working tree — use the cached SQLite index for the base.
+        logging.getLogger(__name__).info("Ensuring base index for %s at %s", repo_path, base_ref)
+        ensure_indexed(repo_path, base_ref)
+        db = db_path_for(repo_path)
+        base = load_from_db(db)
+        head = build_from_path(repo_path)
 
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
-    render(result, base_ref=base_ref)
+    render(
+        result, base_ref=base_ref, head_ref=head_ref or "working tree", include_tests=include_tests
+    )
 
 
 if __name__ == "__main__":

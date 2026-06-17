@@ -80,6 +80,29 @@ def load_from_db(db_path: str) -> GraphSnapshot:
     return snapshot
 
 
+def build_from_ref(repo_path: str, ref: str) -> GraphSnapshot:
+    """Parse a git ref in memory and return a GraphSnapshot (no DB written).
+
+    Extracts the ref via git archive into a temp directory, runs the same
+    parse pipeline as build_from_path, then discards the temp directory.
+    """
+    import io
+    import subprocess
+    import tarfile
+    import tempfile
+
+    proc = subprocess.run(
+        ["git", "archive", ref, "--format=tar"],
+        cwd=repo_path,
+        capture_output=True,
+        check=True,
+    )
+    with tempfile.TemporaryDirectory(prefix="codiff_head_") as tmpdir:
+        with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tf:
+            tf.extractall(tmpdir)
+        return build_from_path(tmpdir)
+
+
 def build_from_path(repo_path: str) -> GraphSnapshot:
     """Parse the working tree at *repo_path* in memory and return a GraphSnapshot.
 
