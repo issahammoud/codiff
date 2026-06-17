@@ -21,74 +21,64 @@ class SummaryStats:
     added_functions: int
     removed_functions: int
     modified_functions: int
-    added_edges: int
-    removed_edges: int
     modules_touched: list[str]  # sorted distinct file paths
 
 
 @dataclass
-class ChainInsertion:
-    """A new node was inserted on the path between two previously adjacent nodes."""
+class AddedFunctionInfo:
+    """A new function and how it connects to the rest of the graph."""
 
-    new_node_id: str
-    predecessor_id: str
-    successor_id: str
-
-
-@dataclass
-class WiringFacts:
-    new_edges: list[tuple[str, str]]
-    removed_edges: list[tuple[str, str]]
-    chain_insertions: list[ChainInsertion]
-
-
-@dataclass
-class BlastFacts:
-    """Callers / callees of changed nodes that were NOT themselves changed."""
-
-    # changed_node_id → sorted list of caller_ids not in the changed set
-    upstream_callers: dict[str, list[str]]
-    # changed_node_id → list of callee_ids not in the changed set
-    downstream_callees: dict[str, list[str]]
-
-
-@dataclass
-class LivenessFacts:
-    dead_on_arrival: list[str]  # new functions with 0 callers in head
-    newly_orphaned: list[str]  # existing functions that lost all callers
-
-
-@dataclass
-class SignatureChange:
     function_id: str
+    file_path: str
+    class_name: Optional[str]
+    existing_callers: list[str]  # callers that existed in base
+    new_callers: list[str]  # callers that are also new functions
+    existing_calls: list[str]  # callees that existed in base
+    new_calls: list[str]  # callees that are also new functions
+    is_entry_point: bool  # True when no callers at all
+
+
+@dataclass
+class ModifiedFunctionInfo:
+    """An existing function whose code, calls, or signature changed."""
+
+    function_id: str
+    file_path: str
+    class_name: Optional[str]
+    signature_changed: bool
     old_params: list[dict]
     new_params: list[dict]
     old_return_type: Optional[str]
     new_return_type: Optional[str]
-    unreconciled_callers: list[str]  # callers in head that were NOT modified
+    calls_added_new: list[str]  # newly called functions that are also new
+    calls_added_existing: list[str]  # newly called functions that already existed
+    calls_removed: list[str]  # callees no longer called (were in base graph)
+    callers: list[str]  # callers in head (context for who is affected)
 
 
 @dataclass
-class SignatureFacts:
-    changes: list[SignatureChange]
+class RemovedFunctionInfo:
+    """A function that was deleted."""
+
+    function_id: str
+    file_path: str
+    class_name: Optional[str]
+    was_called_by: list[str]  # callers in base
 
 
 @dataclass
-class BoundaryFacts:
-    """New call edges that cross module (file) boundaries."""
-
-    new_cross_module_edges: list[tuple[str, str]]  # (caller_id, callee_id)
+class IssueItem:
+    function_id: str
+    message: str
 
 
 @dataclass
 class AnalysisResult:
     summary: SummaryStats
-    wiring: WiringFacts
-    blast: BlastFacts
-    liveness: LivenessFacts
-    boundaries: BoundaryFacts
-    signatures: SignatureFacts
-    flags: list[str]
+    added: list[AddedFunctionInfo]
+    modified: list[ModifiedFunctionInfo]
+    removed: list[RemovedFunctionInfo]
+    issues: list[IssueItem]
 
 
 # ---------------------------------------------------------------------------
@@ -103,20 +93,19 @@ def analyze(
     base: GraphSnapshot,
     head: GraphSnapshot,
 ) -> AnalysisResult:
-    changed_ids = set(diff.added_nodes) | set(diff.removed_nodes) | set(diff.modified_nodes)
+    added_ids = set(diff.added_nodes)
 
+    base_reverse = _reverse_index(base)
     head_reverse = _reverse_index(head)
-    base_in_deg = {fid: len(callers) for fid, callers in _reverse_index(base).items()}
+    base_in_deg = {fid: len(callers) for fid, callers in base_reverse.items()}
     head_in_deg = {fid: len(callers) for fid, callers in head_reverse.items()}
 
     return AnalysisResult(
         summary=_summary(diff),
-        wiring=_wiring(diff, base),
-        blast=_blast(diff, changed_ids, head, head_reverse),
-        liveness=_liveness(diff, head, base_in_deg, head_in_deg),
-        boundaries=_boundaries(diff, head),
-        signatures=_signatures(diff, head_reverse, changed_ids),
-        flags=_flags(diff, base_in_deg),
+        added=_added(diff, added_ids, head, head_reverse),
+        modified=_modified(diff, added_ids, base, head, head_reverse),
+        removed=_removed(diff, base_reverse),
+        issues=_issues(diff, head, head_reverse, base_in_deg, head_in_deg),
     )
 
 
@@ -147,130 +136,137 @@ def _summary(diff: GraphDiff) -> SummaryStats:
         added_functions=len(diff.added_nodes),
         removed_functions=len(diff.removed_nodes),
         modified_functions=len(diff.modified_nodes),
-        added_edges=len(diff.added_edges),
-        removed_edges=len(diff.removed_edges),
         modules_touched=sorted(touched),
     )
 
 
-def _wiring(diff: GraphDiff, base: GraphSnapshot) -> WiringFacts:
-    # Index added edges for fast predecessor / successor lookup
-    new_in: dict[str, set[str]] = defaultdict(set)  # callee → callers (added edges)
-    new_out: dict[str, set[str]] = defaultdict(set)  # caller → callees (added edges)
-    for caller, callee in diff.added_edges:
-        new_in[callee].add(caller)
-        new_out[caller].add(callee)
-
-    # Chain insertion: new node N with A→N and N→B in head, where A→B existed in base
-    chain_insertions: list[ChainInsertion] = []
-    for new_id in diff.added_nodes:
-        for pred in new_in.get(new_id, set()):
-            for succ in new_out.get(new_id, set()):
-                if (pred, succ) in base.edges:
-                    chain_insertions.append(
-                        ChainInsertion(
-                            new_node_id=new_id,
-                            predecessor_id=pred,
-                            successor_id=succ,
-                        )
-                    )
-
-    return WiringFacts(
-        new_edges=sorted(diff.added_edges),
-        removed_edges=sorted(diff.removed_edges),
-        chain_insertions=chain_insertions,
-    )
-
-
-def _blast(
+def _added(
     diff: GraphDiff,
-    changed_ids: set[str],
+    added_ids: set[str],
     head: GraphSnapshot,
     head_reverse: dict[str, set[str]],
-) -> BlastFacts:
-    upstream: dict[str, list[str]] = {}
-    downstream: dict[str, list[str]] = {}
+) -> list[AddedFunctionInfo]:
+    result: list[AddedFunctionInfo] = []
+    for fid, node in sorted(diff.added_nodes.items()):
+        all_callers = sorted(head_reverse.get(fid, set()))
+        existing_callers = [c for c in all_callers if c not in added_ids]
+        new_callers = [c for c in all_callers if c in added_ids]
 
-    for fid in changed_ids:
-        if fid in diff.removed_nodes:
-            continue
+        resolved_calls = [c for c in node.calls if c in head.nodes]
+        existing_calls = sorted(c for c in resolved_calls if c not in added_ids)
+        new_calls = sorted(c for c in resolved_calls if c in added_ids)
 
-        callers = sorted(c for c in head_reverse.get(fid, set()) if c not in changed_ids)
-        if callers:
-            upstream[fid] = callers
-
-        node = head.nodes.get(fid)
-        if node:
-            callees = [c for c in node.calls if c in head.nodes and c not in changed_ids]
-            if callees:
-                downstream[fid] = callees
-
-    return BlastFacts(
-        upstream_callers=upstream,
-        downstream_callees=downstream,
-    )
-
-
-def _liveness(
-    diff: GraphDiff,
-    head: GraphSnapshot,
-    base_in_deg: dict[str, int],
-    head_in_deg: dict[str, int],
-) -> LivenessFacts:
-    dead_on_arrival = sorted(fid for fid in diff.added_nodes if head_in_deg.get(fid, 0) == 0)
-    newly_orphaned = sorted(
-        fid
-        for fid in head.nodes
-        if fid not in diff.added_nodes
-        and base_in_deg.get(fid, 0) > 0
-        and head_in_deg.get(fid, 0) == 0
-    )
-    return LivenessFacts(
-        dead_on_arrival=dead_on_arrival,
-        newly_orphaned=newly_orphaned,
-    )
-
-
-def _boundaries(diff: GraphDiff, head: GraphSnapshot) -> BoundaryFacts:
-    cross: list[tuple[str, str]] = []
-    for caller_id, callee_id in diff.added_edges:
-        caller = head.nodes.get(caller_id)
-        callee = head.nodes.get(callee_id)
-        if caller and callee and caller.file_path != callee.file_path:
-            cross.append((caller_id, callee_id))
-    return BoundaryFacts(new_cross_module_edges=sorted(cross))
-
-
-def _signatures(
-    diff: GraphDiff,
-    head_reverse: dict[str, set[str]],
-    changed_ids: set[str],
-) -> SignatureFacts:
-    changes: list[SignatureChange] = []
-    for fid, (old, new) in diff.modified_nodes.items():
-        if old.parameters == new.parameters and old.return_type == new.return_type:
-            continue
-        unreconciled = sorted(c for c in head_reverse.get(fid, set()) if c not in changed_ids)
-        changes.append(
-            SignatureChange(
+        result.append(
+            AddedFunctionInfo(
                 function_id=fid,
+                file_path=node.file_path,
+                class_name=node.class_name,
+                existing_callers=existing_callers,
+                new_callers=new_callers,
+                existing_calls=existing_calls,
+                new_calls=new_calls,
+                is_entry_point=len(all_callers) == 0,
+            )
+        )
+    return result
+
+
+def _modified(
+    diff: GraphDiff,
+    added_ids: set[str],
+    base: GraphSnapshot,
+    head: GraphSnapshot,
+    head_reverse: dict[str, set[str]],
+) -> list[ModifiedFunctionInfo]:
+    result: list[ModifiedFunctionInfo] = []
+    for fid, (old, new) in sorted(diff.modified_nodes.items()):
+        sig_changed = old.parameters != new.parameters or old.return_type != new.return_type
+
+        old_calls = set(old.calls)
+        new_calls_set = set(new.calls)
+        added_calls = sorted(c for c in (new_calls_set - old_calls) if c in head.nodes)
+        removed_calls = sorted(c for c in (old_calls - new_calls_set) if c in base.nodes)
+
+        result.append(
+            ModifiedFunctionInfo(
+                function_id=fid,
+                file_path=new.file_path,
+                class_name=new.class_name,
+                signature_changed=sig_changed,
                 old_params=old.parameters,
                 new_params=new.parameters,
                 old_return_type=old.return_type,
                 new_return_type=new.return_type,
-                unreconciled_callers=unreconciled,
+                calls_added_new=[c for c in added_calls if c in added_ids],
+                calls_added_existing=[c for c in added_calls if c not in added_ids],
+                calls_removed=removed_calls,
+                callers=sorted(head_reverse.get(fid, set())),
             )
         )
-    return SignatureFacts(changes=changes)
+    return result
 
 
-def _flags(
+def _removed(
     diff: GraphDiff,
+    base_reverse: dict[str, set[str]],
+) -> list[RemovedFunctionInfo]:
+    result: list[RemovedFunctionInfo] = []
+    for fid, node in sorted(diff.removed_nodes.items()):
+        result.append(
+            RemovedFunctionInfo(
+                function_id=fid,
+                file_path=node.file_path,
+                class_name=node.class_name,
+                was_called_by=sorted(base_reverse.get(fid, set())),
+            )
+        )
+    return result
+
+
+def _issues(
+    diff: GraphDiff,
+    head: GraphSnapshot,
+    head_reverse: dict[str, set[str]],
     base_in_deg: dict[str, int],
-) -> list[str]:
-    flags: list[str] = []
-    for fid in diff.modified_nodes:
-        deg = base_in_deg.get(fid, 0)
-        if deg >= HIGH_FAN_IN_THRESHOLD:
-            flags.append(f"{fid} has {deg} callers in base — high-fan-in edit")
-    return sorted(flags)
+    head_in_deg: dict[str, int],
+) -> list[IssueItem]:
+    issues: list[IssueItem] = []
+    changed_ids = set(diff.added_nodes) | set(diff.removed_nodes) | set(diff.modified_nodes)
+
+    for fid, (old, new) in diff.modified_nodes.items():
+        if old.parameters == new.parameters and old.return_type == new.return_type:
+            continue
+        unreconciled = [c for c in head_reverse.get(fid, set()) if c not in changed_ids]
+        if unreconciled:
+            n = len(unreconciled)
+            issues.append(
+                IssueItem(
+                    function_id=fid,
+                    message=f"signature changed — {n} caller{'s' if n > 1 else ''} not updated",
+                )
+            )
+
+    for fid, (old, new) in diff.modified_nodes.items():
+        if base_in_deg.get(fid, 0) >= HIGH_FAN_IN_THRESHOLD:
+            deg = base_in_deg[fid]
+            issues.append(
+                IssueItem(
+                    function_id=fid,
+                    message=f"high fan-in edit ({deg} callers in base)",
+                )
+            )
+
+    for fid in head.nodes:
+        if (
+            fid not in diff.added_nodes
+            and base_in_deg.get(fid, 0) > 0
+            and head_in_deg.get(fid, 0) == 0
+        ):
+            issues.append(
+                IssueItem(
+                    function_id=fid,
+                    message="lost all callers (newly orphaned)",
+                )
+            )
+
+    return sorted(issues, key=lambda i: i.function_id)

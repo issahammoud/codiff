@@ -39,7 +39,6 @@ def _snapshot(*nodes: NodeInfo) -> GraphSnapshot:
     snap = GraphSnapshot()
     for n in nodes:
         snap.nodes[n.function_id] = n
-    # Populate edges
     all_ids = set(snap.nodes)
     for node in snap.nodes.values():
         for callee in node.calls:
@@ -141,7 +140,7 @@ class TestNodeChanged:
 
 
 # ---------------------------------------------------------------------------
-# analysis tests
+# analysis tests — summary
 # ---------------------------------------------------------------------------
 
 
@@ -149,115 +148,34 @@ class TestSummary:
     def test_counts_are_correct(self):
         base = _snapshot(_node("mod.a"), _node("mod.b"))
         head = _snapshot(
-            _node("mod.a", code="changed"),  # modified
-            _node("mod.c"),  # added
+            _node("mod.a", code="changed"),
+            _node("mod.c"),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        s = result.summary
-        assert s.added_functions == 1
-        assert s.removed_functions == 1
-        assert s.modified_functions == 1
+        assert result.summary.added_functions == 1
+        assert result.summary.removed_functions == 1
+        assert result.summary.modified_functions == 1
 
     def test_modules_touched(self):
         base = _snapshot(_node("mod.a", file_path="a.py"))
         head = _snapshot(
-            _node("mod.a", file_path="a.py", code="changed"), _node("mod.b", file_path="b.py")
+            _node("mod.a", file_path="a.py", code="changed"),
+            _node("mod.b", file_path="b.py"),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
         assert "a.py" in result.summary.modules_touched
         assert "b.py" in result.summary.modules_touched
 
-    def test_edge_counts_in_summary(self):
-        base = _snapshot(_node("mod.a", calls=["mod.b"]), _node("mod.b"))
-        head = _snapshot(_node("mod.a"), _node("mod.b", calls=["mod.a"]))
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        assert result.summary.added_edges == 1
-        assert result.summary.removed_edges == 1
+
+# ---------------------------------------------------------------------------
+# analysis tests — added functions
+# ---------------------------------------------------------------------------
 
 
-class TestChainInsertion:
-    def test_chain_insertion_detected(self):
-        # base: A → C
-        base = _snapshot(
-            _node("mod.A", calls=["mod.C"]),
-            _node("mod.C"),
-        )
-        # head: A → N → C  (N is new)
-        head = _snapshot(
-            _node("mod.A", calls=["mod.N"]),
-            _node("mod.N", calls=["mod.C"]),  # new node
-            _node("mod.C"),
-        )
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        insertions = result.wiring.chain_insertions
-        assert len(insertions) == 1
-        ins = insertions[0]
-        assert ins.new_node_id == "mod.N"
-        assert ins.predecessor_id == "mod.A"
-        assert ins.successor_id == "mod.C"
-
-    def test_no_false_chain_insertion(self):
-        # New node added but no existing A→B edge is split
-        base = _snapshot(_node("mod.A"), _node("mod.B"))
-        head = _snapshot(_node("mod.A"), _node("mod.B"), _node("mod.N"))
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        assert not result.wiring.chain_insertions
-
-
-class TestBlastRadius:
-    def test_upstream_callers_of_modified_node(self):
-        # X calls A; A is modified; Y is unrelated
-        base = _snapshot(
-            _node("mod.X", calls=["mod.A"]),
-            _node("mod.A"),
-            _node("mod.Y"),
-        )
-        head = _snapshot(
-            _node("mod.X", calls=["mod.A"]),
-            _node("mod.A", code="changed"),
-            _node("mod.Y"),
-        )
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        assert "mod.X" in result.blast.upstream_callers.get("mod.A", [])
-        assert "mod.Y" not in result.blast.upstream_callers.get("mod.A", [])
-
-    def test_downstream_callees_of_modified_node(self):
-        base = _snapshot(
-            _node("mod.A", calls=["mod.B"]),
-            _node("mod.B"),
-        )
-        head = _snapshot(
-            _node("mod.A", calls=["mod.B"], code="changed"),
-            _node("mod.B"),
-        )
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        assert "mod.B" in result.blast.downstream_callees.get("mod.A", [])
-
-    def test_removed_node_not_in_blast(self):
-        base = _snapshot(_node("mod.A"), _node("mod.B"))
-        head = _snapshot(_node("mod.A"))
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        assert "mod.B" not in result.blast.upstream_callers
-        assert "mod.B" not in result.blast.downstream_callees
-
-
-class TestLiveness:
-    def test_dead_on_arrival(self):
-        base = _snapshot()
-        head = _snapshot(_node("mod.new_fn"))  # nothing calls it
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        assert "mod.new_fn" in result.liveness.dead_on_arrival
-
-    def test_called_new_fn_not_dead_on_arrival(self):
+class TestAdded:
+    def test_new_function_with_existing_caller(self):
         base = _snapshot(_node("mod.caller"))
         head = _snapshot(
             _node("mod.caller", calls=["mod.new_fn"]),
@@ -265,128 +183,250 @@ class TestLiveness:
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert "mod.new_fn" not in result.liveness.dead_on_arrival
+        assert len(result.added) == 1
+        fn = result.added[0]
+        assert fn.function_id == "mod.new_fn"
+        assert "mod.caller" in fn.existing_callers
+        assert not fn.new_callers
+        assert not fn.is_entry_point
 
-    def test_newly_orphaned(self):
-        # mod.B had a caller in base; that caller is removed in head
-        base = _snapshot(
-            _node("mod.A", calls=["mod.B"]),
-            _node("mod.B"),
-        )
+    def test_new_function_with_no_callers_is_entry_point(self):
+        base = _snapshot()
+        head = _snapshot(_node("mod.new_fn"))
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        fn = result.added[0]
+        assert fn.is_entry_point
+        assert not fn.existing_callers
+        assert not fn.new_callers
+
+    def test_new_function_calling_new_vs_existing(self):
+        # mod.existing is in both; mod.also_new is added together with mod.new_fn
+        base = _snapshot(_node("mod.existing"))
         head = _snapshot(
-            _node("mod.A"),  # no longer calls B
-            _node("mod.B"),
+            _node("mod.existing"),
+            _node("mod.new_fn", calls=["mod.existing", "mod.also_new"]),
+            _node("mod.also_new"),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert "mod.B" in result.liveness.newly_orphaned
+        fn = next(f for f in result.added if f.function_id == "mod.new_fn")
+        assert "mod.existing" in fn.existing_calls
+        assert "mod.also_new" in fn.new_calls
 
-    def test_not_orphaned_if_still_has_caller(self):
-        base = _snapshot(
-            _node("mod.A", calls=["mod.B"]),
-            _node("mod.C", calls=["mod.B"]),
-            _node("mod.B"),
-        )
+    def test_new_function_called_by_new_caller(self):
+        # Both mod.caller and mod.new_fn are new; caller → new_fn
+        base = _snapshot()
         head = _snapshot(
-            _node("mod.A"),  # drops call to B
-            _node("mod.C", calls=["mod.B"]),
-            _node("mod.B"),
+            _node("mod.caller", calls=["mod.new_fn"]),
+            _node("mod.new_fn"),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert "mod.B" not in result.liveness.newly_orphaned
+        fn = next(f for f in result.added if f.function_id == "mod.new_fn")
+        assert "mod.caller" in fn.new_callers
+        assert not fn.existing_callers
+        assert not fn.is_entry_point
 
 
-class TestBoundaries:
-    def test_new_cross_module_edge_detected(self):
-        base = _snapshot(
-            _node("a.fn", file_path="a.py"),
-            _node("b.fn", file_path="b.py"),
-        )
+# ---------------------------------------------------------------------------
+# analysis tests — modified functions
+# ---------------------------------------------------------------------------
+
+
+class TestModified:
+    def test_calls_added_to_existing_function(self):
+        base = _snapshot(_node("mod.fn"), _node("mod.target"))
         head = _snapshot(
-            _node("a.fn", file_path="a.py", calls=["b.fn"]),
-            _node("b.fn", file_path="b.py"),
+            _node("mod.fn", calls=["mod.target"]),
+            _node("mod.target"),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert ("a.fn", "b.fn") in result.boundaries.new_cross_module_edges
+        assert len(result.modified) == 1
+        fn = result.modified[0]
+        assert "mod.target" in fn.calls_added_existing
+        assert not fn.calls_added_new
 
-    def test_intra_module_edge_not_in_boundaries(self):
-        base = _snapshot(
-            _node("a.fn1", file_path="a.py"),
-            _node("a.fn2", file_path="a.py"),
-        )
+    def test_calls_added_new_function(self):
+        base = _snapshot(_node("mod.fn"))
         head = _snapshot(
-            _node("a.fn1", file_path="a.py", calls=["a.fn2"]),
-            _node("a.fn2", file_path="a.py"),
+            _node("mod.fn", calls=["mod.new_target"]),
+            _node("mod.new_target"),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert not result.boundaries.new_cross_module_edges
+        fn = result.modified[0]
+        assert "mod.new_target" in fn.calls_added_new
+        assert not fn.calls_added_existing
 
-
-class TestSignatureChanges:
-    def test_parameter_change_reported(self):
+    def test_calls_removed(self):
         base = _snapshot(
-            _node("mod.A", calls=["mod.fn"]),
-            _node("mod.fn", parameters=[{"name": "x", "type": "int", "value": None}]),
+            _node("mod.fn", calls=["mod.target"]),
+            _node("mod.target"),
         )
         head = _snapshot(
-            _node("mod.A", calls=["mod.fn"]),
-            _node("mod.fn", parameters=[{"name": "x", "type": "str", "value": None}]),
+            _node("mod.fn", code="changed"),
+            _node("mod.target"),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert len(result.signatures.changes) == 1
-        ch = result.signatures.changes[0]
-        assert ch.function_id == "mod.fn"
+        fn = result.modified[0]
+        assert "mod.target" in fn.calls_removed
 
-    def test_unreconciled_callers_identified(self):
+    def test_signature_changed_detected(self):
+        base = _snapshot(_node("mod.fn", parameters=[{"name": "x", "type": "int", "value": None}]))
+        head = _snapshot(_node("mod.fn", parameters=[{"name": "x", "type": "str", "value": None}]))
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        fn = result.modified[0]
+        assert fn.signature_changed
+        assert fn.old_params[0]["type"] == "int"
+        assert fn.new_params[0]["type"] == "str"
+
+    def test_body_only_change_no_signature_no_calls(self):
+        base = _snapshot(_node("mod.fn", code="return 1"))
+        head = _snapshot(_node("mod.fn", code="return 2"))
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        fn = result.modified[0]
+        assert not fn.signature_changed
+        assert not fn.calls_added_new
+        assert not fn.calls_added_existing
+        assert not fn.calls_removed
+
+    def test_callers_in_head_populated(self):
+        base = _snapshot(
+            _node("mod.caller", calls=["mod.fn"]),
+            _node("mod.fn"),
+        )
+        head = _snapshot(
+            _node("mod.caller", calls=["mod.fn"]),
+            _node("mod.fn", code="changed"),
+        )
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        fn = result.modified[0]
+        assert "mod.caller" in fn.callers
+
+
+# ---------------------------------------------------------------------------
+# analysis tests — removed functions
+# ---------------------------------------------------------------------------
+
+
+class TestRemoved:
+    def test_removed_function_listed(self):
+        base = _snapshot(_node("mod.a"), _node("mod.b"))
+        head = _snapshot(_node("mod.a"))
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        assert len(result.removed) == 1
+        assert result.removed[0].function_id == "mod.b"
+
+    def test_was_called_by_populated(self):
+        base = _snapshot(
+            _node("mod.caller", calls=["mod.fn"]),
+            _node("mod.fn"),
+        )
+        head = _snapshot(_node("mod.caller"))
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        fn = result.removed[0]
+        assert "mod.caller" in fn.was_called_by
+
+    def test_removed_function_file_path_correct(self):
+        base = _snapshot(_node("mod.fn", file_path="src/mod.py"))
+        head = _snapshot()
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        assert result.removed[0].file_path == "src/mod.py"
+
+
+# ---------------------------------------------------------------------------
+# analysis tests — issues
+# ---------------------------------------------------------------------------
+
+
+class TestIssues:
+    def test_signature_change_with_unreconciled_callers(self):
         base = _snapshot(
             _node("mod.caller", calls=["mod.fn"]),
             _node("mod.fn", parameters=[{"name": "x", "type": "int", "value": None}]),
         )
         head = _snapshot(
-            _node("mod.caller", calls=["mod.fn"]),  # caller NOT updated
+            _node("mod.caller", calls=["mod.fn"]),  # not updated
             _node("mod.fn", parameters=[{"name": "x", "type": "str", "value": None}]),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        ch = result.signatures.changes[0]
-        assert "mod.caller" in ch.unreconciled_callers
+        matching = [
+            i for i in result.issues if i.function_id == "mod.fn" and "not updated" in i.message
+        ]
+        assert len(matching) == 1
 
-    def test_return_type_change_reported(self):
-        base = _snapshot(_node("mod.fn", return_type="int"))
-        head = _snapshot(_node("mod.fn", return_type="str"))
-        diff = diff_snapshots(base, head)
-        result = analyze(diff, base, head)
-        assert any(ch.function_id == "mod.fn" for ch in result.signatures.changes)
-
-    def test_code_only_change_not_in_signatures(self):
+    def test_no_issue_when_caller_also_updated(self):
         base = _snapshot(
-            _node("mod.fn", code="return 1", parameters=[], return_type=None),
+            _node("mod.caller", calls=["mod.fn"]),
+            _node("mod.fn", parameters=[{"name": "x", "type": "int", "value": None}]),
         )
         head = _snapshot(
-            _node("mod.fn", code="return 2", parameters=[], return_type=None),
+            _node("mod.caller", calls=["mod.fn"], code="updated"),
+            _node("mod.fn", parameters=[{"name": "x", "type": "str", "value": None}]),
         )
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert not result.signatures.changes
+        matching = [i for i in result.issues if "not updated" in i.message]
+        assert not matching
 
+    def test_newly_orphaned_in_issues(self):
+        base = _snapshot(
+            _node("mod.caller", calls=["mod.fn"]),
+            _node("mod.fn"),
+        )
+        head = _snapshot(
+            _node("mod.caller"),  # dropped call to mod.fn
+            _node("mod.fn"),
+        )
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        matching = [
+            i for i in result.issues if i.function_id == "mod.fn" and "orphaned" in i.message
+        ]
+        assert len(matching) == 1
 
-class TestFlags:
-    def test_high_fan_in_flagged(self):
+    def test_not_orphaned_if_still_has_caller(self):
+        base = _snapshot(
+            _node("mod.a", calls=["mod.fn"]),
+            _node("mod.b", calls=["mod.fn"]),
+            _node("mod.fn"),
+        )
+        head = _snapshot(
+            _node("mod.a"),  # drops call
+            _node("mod.b", calls=["mod.fn"]),
+            _node("mod.fn"),
+        )
+        diff = diff_snapshots(base, head)
+        result = analyze(diff, base, head)
+        matching = [
+            i for i in result.issues if i.function_id == "mod.fn" and "orphaned" in i.message
+        ]
+        assert not matching
+
+    def test_high_fan_in_in_issues(self):
         callers = [_node(f"mod.c{i}", calls=["mod.fn"]) for i in range(HIGH_FAN_IN_THRESHOLD)]
         base = _snapshot(_node("mod.fn"), *callers)
         head = _snapshot(_node("mod.fn", code="changed"), *callers)
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert any("mod.fn" in f for f in result.flags)
+        matching = [i for i in result.issues if i.function_id == "mod.fn" and "fan-in" in i.message]
+        assert len(matching) == 1
 
-    def test_low_fan_in_not_flagged(self):
+    def test_low_fan_in_not_in_issues(self):
         callers = [_node(f"mod.c{i}", calls=["mod.fn"]) for i in range(HIGH_FAN_IN_THRESHOLD - 1)]
         base = _snapshot(_node("mod.fn"), *callers)
         head = _snapshot(_node("mod.fn", code="changed"), *callers)
         diff = diff_snapshots(base, head)
         result = analyze(diff, base, head)
-        assert not result.flags
+        matching = [i for i in result.issues if "fan-in" in i.message]
+        assert not matching

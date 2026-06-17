@@ -1,43 +1,119 @@
 """Render an AnalysisResult to the terminal using Rich.
 
-Each section is only printed when it has content. When a list exceeds
-ROLLUP_THRESHOLD items, we show a capped subset plus a "… and N more" line
-rather than dumping everything.
+Groups changes into source vs. test functions. Within each group, renders
+compact tables for Added, Modified, and Removed. Issues appear at the end.
+
+Color scheme
+------------
+- New functions that share a call-graph chain are assigned a distinct color.
+  The same color is used consistently in both the Function column and every
+  Caller / Callee reference, so you can visually trace a chain at a glance.
+- New functions that belong to no chain (isolated additions) stay white.
+- Existing / pre-diff functions are rendered dim (gray).
 """
 
 from collections import defaultdict
-from typing import Optional
+from itertools import groupby
+from pathlib import Path
+from typing import Any, Callable, Optional
 
+from rich.box import Box
 from rich.console import Console
+from rich.table import Table
 
 from codiff.diff.analysis import (
+    AddedFunctionInfo,
     AnalysisResult,
+    IssueItem,
+    ModifiedFunctionInfo,
+    RemovedFunctionInfo,
 )
 
 console = Console()
 
-# Max items shown in each list before rolling up
-_EDGE_MAX = 15
-_CALLER_MAX = 8
-_GENERIC_MAX = 10
+_CALLER_MAX = 5
+_CALLEE_MAX = 6
+
+# Solid underline under column headers; dashed line at add_section() group breaks.
+_BOX = Box(
+    "    \n"  # top
+    "    \n"  # head
+    " ── \n"  # head_row  (solid ─ under header)
+    "    \n"  # mid       (unused — no line between every row)
+    " ╌╌ \n"  # row       (dashed ╌ at section / group breaks)
+    "    \n"  # foot_row
+    "    \n"  # foot
+    "    \n",  # bottom
+    ascii=False,
+)
+
+# Distinct colors for call-chain groups. Green/red/yellow are reserved for
+# the +/~/- indicators, cyan for the header rule.
+_CHAIN_COLORS = [
+    "magenta",
+    "cornflower_blue",
+    "orange3",
+    "medium_purple1",
+    "spring_green2",
+    "hot_pink",
+    "sky_blue1",
+    "gold3",
+]
 
 
-def render(result: AnalysisResult, base_ref: str = "HEAD") -> None:
-    """Print the full structural diff report."""
-    console.print()
-    console.rule(
-        f"[bold cyan]codiff[/bold cyan]  [dim]{base_ref}[/dim] [dim]→[/dim] working tree",
-        style="cyan",
-    )
+# ---------------------------------------------------------------------------
+# Color map: connected components of new functions
+# ---------------------------------------------------------------------------
 
-    _render_summary(result)
-    _render_wiring(result)
-    _render_blast(result)
-    _render_liveness(result)
-    _render_boundaries(result)
-    _render_signatures(result)
-    _render_flags(result)
-    console.print()
+
+def _build_color_map(result: AnalysisResult) -> dict[str, str]:
+    """Assign a color to each connected component of >= 2 new functions.
+
+    Components are identified via undirected BFS over mutual call edges among
+    added functions. Single-node components (isolated additions) are not
+    assigned a color — they fall back to plain white in the render.
+    """
+    added_ids = {fn.function_id for fn in result.added}
+
+    adj: dict[str, set[str]] = defaultdict(set)
+    for fn in result.added:
+        for callee in fn.new_calls:
+            adj[fn.function_id].add(callee)
+            adj[callee].add(fn.function_id)
+        for caller in fn.new_callers:
+            adj[fn.function_id].add(caller)
+            adj[caller].add(fn.function_id)
+
+    visited: set[str] = set()
+    components: list[list[str]] = []
+    for fid in sorted(added_ids):
+        if fid in visited:
+            continue
+        component: list[str] = []
+        queue = [fid]
+        while queue:
+            node = queue.pop(0)
+            if node in visited:
+                continue
+            visited.add(node)
+            component.append(node)
+            for neighbor in sorted(adj.get(node, set())):
+                if neighbor not in visited:
+                    queue.append(neighbor)
+        components.append(component)
+
+    components.sort(key=lambda c: (-len(c), c[0]))
+
+    color_map: dict[str, str] = {}
+    color_idx = 0
+    for component in components:
+        if len(component) >= 2:
+            color = _CHAIN_COLORS[color_idx % len(_CHAIN_COLORS)]
+            color_idx += 1
+            for fid in component:
+                color_map[fid] = color
+
+    return color_map
 
 
 # ---------------------------------------------------------------------------
@@ -51,216 +127,41 @@ def _lbl(function_id: str) -> str:
     return ".".join(parts[-3:]) if len(parts) > 3 else function_id
 
 
-def _section(title: str) -> None:
-    console.print()
-    console.rule(f"[bold]{title}[/bold]", style="dim")
+def _name(function_id: str) -> str:
+    """Compact label: just the bare function name (last dotted segment)."""
+    return function_id.split(".")[-1]
 
 
-def _truncated_list(items: list, max_items: int) -> tuple[list, Optional[int]]:
-    """Return (shown_items, remaining_count_or_None)."""
+def _fn_label(fid: str, *, is_new: bool, color_map: dict[str, str]) -> str:
+    """Render a function name with the appropriate color.
+
+    - New + in a chain  → chain color
+    - New + isolated    → white (no markup)
+    - Existing          → dim gray
+    """
+    if not is_new:
+        return f"[dim]{_name(fid)}[/dim]"
+    color = color_map.get(fid)
+    if color:
+        return f"[{color}]{_name(fid)}[/{color}]"
+    return _name(fid)
+
+
+def _is_test(file_path: str) -> bool:
+    return any(part.startswith("test") for part in Path(file_path).parts)
+
+
+def _partition(items: list, *, test: bool) -> list:
+    return [i for i in items if _is_test(i.file_path) == test]
+
+
+def _truncate(items: list[str], max_items: int) -> tuple[list[str], int]:
     if len(items) <= max_items:
-        return items, None
+        return items, 0
     return items[:max_items], len(items) - max_items
 
 
-# ---------------------------------------------------------------------------
-# Section renderers
-# ---------------------------------------------------------------------------
-
-
-def _render_summary(result: AnalysisResult) -> None:
-    s = result.summary
-    total_changes = s.added_functions + s.removed_functions + s.modified_functions
-    if total_changes == 0 and s.added_edges == 0 and s.removed_edges == 0:
-        console.print("\n  [dim]No structural changes detected.[/dim]")
-        return
-
-    _section("Summary")
-
-    func_parts: list[str] = []
-    if s.added_functions:
-        func_parts.append(f"[green]+{s.added_functions}[/green]")
-    if s.removed_functions:
-        func_parts.append(f"[red]-{s.removed_functions}[/red]")
-    if s.modified_functions:
-        func_parts.append(f"[yellow]~{s.modified_functions}[/yellow]")
-    funcs = ("  " + " / ".join(func_parts) + " functions") if func_parts else "  0 functions"
-
-    edge_parts: list[str] = []
-    if s.added_edges:
-        edge_parts.append(f"[green]+{s.added_edges}[/green]")
-    if s.removed_edges:
-        edge_parts.append(f"[red]-{s.removed_edges}[/red]")
-    edges = ("  " + " / ".join(edge_parts) + " edges") if edge_parts else ""
-
-    n = len(s.modules_touched)
-    mods = f"  {n} module{'s' if n != 1 else ''} touched"
-
-    line = "   |   ".join(filter(None, [funcs, edges, mods]))
-    console.print(line)
-
-    for mod in s.modules_touched:
-        console.print(f"    [dim]{mod}[/dim]")
-
-
-def _render_wiring(result: AnalysisResult) -> None:
-    w = result.wiring
-    if not w.new_edges and not w.removed_edges and not w.chain_insertions:
-        return
-
-    _section("Wiring")
-
-    if w.new_edges:
-        shown, rest = _truncated_list(w.new_edges, _EDGE_MAX)
-        console.print(f"  [green]New edges ({len(w.new_edges)})[/green]")
-        for caller, callee in shown:
-            console.print(f"    [green]+[/green] {_lbl(caller)} → {_lbl(callee)}")
-        if rest:
-            console.print(f"    [dim]… and {rest} more[/dim]")
-
-    if w.removed_edges:
-        shown, rest = _truncated_list(w.removed_edges, _EDGE_MAX)
-        console.print(f"  [red]Removed edges ({len(w.removed_edges)})[/red]")
-        for caller, callee in shown:
-            console.print(f"    [red]-[/red] {_lbl(caller)} → {_lbl(callee)}")
-        if rest:
-            console.print(f"    [dim]… and {rest} more[/dim]")
-
-    if w.chain_insertions:
-        console.print(f"  [yellow]Chain insertions ({len(w.chain_insertions)})[/yellow]")
-        shown, rest = _truncated_list(w.chain_insertions, _GENERIC_MAX)
-        for ins in shown:
-            console.print(
-                f"    [yellow]+[/yellow] [bold]{_lbl(ins.new_node_id)}[/bold] inserted between"
-                f" {_lbl(ins.predecessor_id)} → {_lbl(ins.successor_id)}"
-            )
-        if rest:
-            console.print(f"    [dim]… and {rest} more[/dim]")
-
-
-def _render_blast(result: AnalysisResult) -> None:
-    b = result.blast
-    if not b.upstream_callers and not b.downstream_callees:
-        return
-
-    _section("Blast Radius")
-    console.print(
-        "  [dim]Callers / callees of changed functions that were NOT themselves modified.[/dim]"
-    )
-
-    if b.upstream_callers:
-        console.print()
-        console.print("  [bold]Upstream callers[/bold]")
-        for fid, callers in sorted(b.upstream_callers.items()):
-            shown, rest = _truncated_list(callers, _CALLER_MAX)
-            caller_str = ", ".join(_lbl(c) for c in shown)
-            if rest:
-                caller_str += f", [dim]… +{rest} more[/dim]"
-            console.print(f"    [yellow]{_lbl(fid)}[/yellow] ← {caller_str}")
-
-    if b.downstream_callees:
-        console.print()
-        console.print("  [bold]Downstream callees[/bold]")
-        for fid, callees in sorted(b.downstream_callees.items()):
-            shown, rest = _truncated_list(callees, _CALLER_MAX)
-            callee_str = ", ".join(_lbl(c) for c in shown)
-            if rest:
-                callee_str += f", [dim]… +{rest} more[/dim]"
-            console.print(f"    [yellow]{_lbl(fid)}[/yellow] → {callee_str}")
-
-
-def _render_liveness(result: AnalysisResult) -> None:
-    lv = result.liveness
-    if not lv.dead_on_arrival and not lv.newly_orphaned:
-        return
-
-    _section("Liveness")
-
-    if lv.dead_on_arrival:
-        console.print("  [red]Dead on arrival[/red] [dim](new functions nothing calls)[/dim]")
-        shown, rest = _truncated_list(lv.dead_on_arrival, _GENERIC_MAX)
-        for fid in shown:
-            console.print(f"    [red]•[/red] {_lbl(fid)}")
-        if rest:
-            console.print(f"    [dim]… and {rest} more[/dim]")
-
-    if lv.newly_orphaned:
-        console.print("  [red]Newly orphaned[/red] [dim](had callers, now has none)[/dim]")
-        shown, rest = _truncated_list(lv.newly_orphaned, _GENERIC_MAX)
-        for fid in shown:
-            console.print(f"    [red]•[/red] {_lbl(fid)}")
-        if rest:
-            console.print(f"    [dim]… and {rest} more[/dim]")
-
-
-def _render_boundaries(result: AnalysisResult) -> None:
-    edges = result.boundaries.new_cross_module_edges
-    if not edges:
-        return
-
-    _section("Boundaries")
-    console.print("  [bold]New cross-module edges[/bold]")
-
-    # Group by (caller_module, callee_module) for rollup
-    by_pair: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
-    for caller_id, callee_id in edges:
-        # Module = file_path prefix (directory portion of the function id)
-        caller_mod = ".".join(caller_id.split(".")[:-1]) if "." in caller_id else caller_id
-        callee_mod = ".".join(callee_id.split(".")[:-1]) if "." in callee_id else callee_id
-        by_pair[(caller_mod, callee_mod)].append((caller_id, callee_id))
-
-    shown_pairs, rest = _truncated_list(sorted(by_pair.items()), _GENERIC_MAX)
-    for (caller_mod, callee_mod), pair_edges in shown_pairs:
-        n = len(pair_edges)
-        ex_caller, ex_callee = pair_edges[0]
-        extra = f" [dim](e.g. {_lbl(ex_caller)} → {_lbl(ex_callee)})[/dim]" if n == 1 else ""
-        console.print(
-            f"    [cyan]{caller_mod}[/cyan] → [cyan]{callee_mod}[/cyan]"
-            f"  [dim]{n} edge{'s' if n > 1 else ''}[/dim]{extra}"
-        )
-    if rest:
-        console.print(f"    [dim]… and {rest} more module pairs[/dim]")
-
-
-def _render_signatures(result: AnalysisResult) -> None:
-    changes = result.signatures.changes
-    if not changes:
-        return
-
-    _section("Signatures")
-    shown, rest = _truncated_list(changes, _GENERIC_MAX)
-
-    for ch in shown:
-        console.print(f"  [bold yellow]{_lbl(ch.function_id)}[/bold yellow]")
-        old_sig = _fmt_sig(ch.old_params, ch.old_return_type)
-        new_sig = _fmt_sig(ch.new_params, ch.new_return_type)
-        console.print(f"    [red]was[/red] {old_sig}")
-        console.print(f"    [green]now[/green] {new_sig}")
-        if ch.unreconciled_callers:
-            n = len(ch.unreconciled_callers)
-            shown_c, rest_c = _truncated_list(ch.unreconciled_callers, 4)
-            callers_str = ", ".join(_lbl(c) for c in shown_c)
-            if rest_c:
-                callers_str += f", [dim]… +{rest_c} more[/dim]"
-            console.print(
-                f"    [dim]{n} caller{'s' if n > 1 else ''} not updated:[/dim] {callers_str}"
-            )
-
-    if rest:
-        console.print(f"\n  [dim]… and {rest} more signature changes[/dim]")
-
-
-def _render_flags(result: AnalysisResult) -> None:
-    if not result.flags:
-        return
-
-    _section("Flags")
-    for flag in result.flags:
-        console.print(f"  [bold red]⚠[/bold red]  {flag}")
-
-
 def _fmt_sig(params: list[dict], return_type: Optional[str]) -> str:
-    """Format a signature as (param: type = default, ...) → return_type."""
     parts: list[str] = []
     for p in params:
         part = p.get("name", "?")
@@ -273,3 +174,322 @@ def _fmt_sig(params: list[dict], return_type: Optional[str]) -> str:
     if return_type:
         sig += f" → {return_type}"
     return sig
+
+
+def _make_table(*columns: tuple[str, dict]) -> Table:
+    t = Table(
+        box=_BOX,
+        show_header=True,
+        header_style="dim",
+        border_style="grey50",
+        padding=(0, 1),
+        show_edge=False,
+    )
+    for name, kwargs in columns:
+        t.add_column(name, **kwargs)
+    return t
+
+
+def _group_key(fn: object) -> tuple[str, str]:
+    """Sort/group key: (file_path, class_name) for section breaks."""
+    return (fn.file_path, fn.class_name or "")  # type: ignore[attr-defined]
+
+
+def _order_group(fns: list[AddedFunctionInfo]) -> list[AddedFunctionInfo]:
+    """Order functions within a (file, class) group for readability.
+
+    Entry points (nothing calls them within the group) come first.
+    BFS then follows new_calls within the group so callee rows flow
+    directly after their caller. Unreached functions are appended last.
+    """
+    if len(fns) <= 1:
+        return fns
+
+    by_id = {fn.function_id: fn for fn in fns}
+    g_ids = set(by_id)
+
+    # Local starts: true entry points first, then functions whose callers
+    # are all outside this group (so they're locally uncalled).
+    starts = [fn for fn in fns if fn.is_entry_point or not (set(fn.new_callers) & g_ids)]
+    starts.sort(key=lambda fn: (0 if fn.is_entry_point else 1, _name(fn.function_id)))
+
+    # DFS so each chain stays contiguous (BFS would interleave them).
+    # Children are pushed in reverse sorted order so the first callee
+    # is processed next, maintaining alphabetical order within siblings.
+    ordered: list[AddedFunctionInfo] = []
+    visited: set[str] = set()
+    for start in starts:
+        stack = [start.function_id]
+        while stack:
+            fid = stack.pop()
+            if fid in visited:
+                continue
+            visited.add(fid)
+            ordered.append(by_id[fid])
+            for callee_id in reversed(sorted(by_id[fid].new_calls)):
+                if callee_id in g_ids and callee_id not in visited:
+                    stack.append(callee_id)
+
+    # Safety: append anything not reached (e.g. cycles)
+    for fn in sorted(fns, key=lambda fn: _name(fn.function_id)):
+        if fn.function_id not in visited:
+            ordered.append(fn)
+
+    return ordered
+
+
+def _add_grouped_rows(
+    t: Table,
+    fns: list[Any],
+    has_class: bool,
+    indicator: str,
+    extra_cells: Callable[[Any], list[str]],
+) -> None:
+    """Add rows to *t* grouped by (file, class).
+
+    File, class, and indicator are printed only once per group at the center
+    row. A dashed section separator is inserted between groups.
+    """
+    groups = [(key, list(grp)) for key, grp in groupby(fns, key=_group_key)]
+    for g_idx, ((file_path, class_name), group_fns) in enumerate(groups):
+        if g_idx > 0:
+            t.add_section()
+        mid = (len(group_fns) - 1) // 2
+        for i, fn in enumerate(group_fns):
+            show = i == mid
+            row = [indicator if show else "", file_path if show else ""]
+            if has_class:
+                row.append((class_name or "[dim]—[/dim]") if show else "")
+            row.extend(extra_cells(fn))
+            t.add_row(*row)
+
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+
+def _render_summary(result: AnalysisResult) -> None:
+    s = result.summary
+    total = s.added_functions + s.removed_functions + s.modified_functions
+    if total == 0:
+        console.print("\n  [dim]No structural changes detected.[/dim]")
+        return
+    parts: list[str] = []
+    if s.added_functions:
+        parts.append(f"[green]+{s.added_functions} added[/green]")
+    if s.modified_functions:
+        parts.append(f"[yellow]~{s.modified_functions} modified[/yellow]")
+    if s.removed_functions:
+        parts.append(f"[red]-{s.removed_functions} removed[/red]")
+    n = len(s.modules_touched)
+    parts.append(f"[dim]{n} module{'s' if n != 1 else ''}[/dim]")
+    console.print("  " + "  ·  ".join(parts))
+
+
+# ---------------------------------------------------------------------------
+# Group renderer
+# ---------------------------------------------------------------------------
+
+
+def render(result: AnalysisResult, base_ref: str = "HEAD") -> None:
+    """Print the full structural diff report."""
+    console.print()
+    console.rule(
+        f"[bold cyan]codiff[/bold cyan]  [dim]{base_ref}[/dim] [dim]→[/dim] working tree",
+        style="cyan",
+    )
+    _render_summary(result)
+
+    color_map = _build_color_map(result)
+
+    src_added = _partition(result.added, test=False)
+    tst_added = _partition(result.added, test=True)
+    src_modified = _partition(result.modified, test=False)
+    tst_modified = _partition(result.modified, test=True)
+    src_removed = _partition(result.removed, test=False)
+    tst_removed = _partition(result.removed, test=True)
+
+    _render_group("Source", src_added, src_modified, src_removed, color_map)
+    _render_group("Tests", tst_added, tst_modified, tst_removed, color_map)
+    _render_issues(result.issues)
+    console.print()
+
+
+def _render_group(
+    title: str,
+    added: list[AddedFunctionInfo],
+    modified: list[ModifiedFunctionInfo],
+    removed: list[RemovedFunctionInfo],
+    color_map: dict[str, str],
+) -> None:
+    if not added and not modified and not removed:
+        return
+    console.print()
+    console.rule(f"[bold]{title}[/bold]", style="dim blue")
+
+    if added:
+        console.print("\n [dim]Added[/dim]")
+        console.print(_added_table(added, color_map))
+
+    if modified:
+        console.print("\n [dim]Modified[/dim]")
+        console.print(_modified_table(modified, color_map))
+
+    if removed:
+        console.print("\n [dim]Removed[/dim]")
+        console.print(_removed_table(removed))
+
+
+# ---------------------------------------------------------------------------
+# Table builders
+# ---------------------------------------------------------------------------
+
+
+def _added_table(functions: list[AddedFunctionInfo], color_map: dict[str, str]) -> Table:
+    # Sort by group, then order within each group: entry points first, then BFS.
+    grouped = sorted(functions, key=_group_key)
+    fns: list[AddedFunctionInfo] = []
+    for _, grp in groupby(grouped, key=_group_key):
+        fns.extend(_order_group(list(grp)))
+    has_class = any(fn.class_name for fn in fns)
+    cols: list[tuple[str, dict]] = [
+        ("", {"width": 1, "style": "green bold"}),
+        ("File", {"style": "dim", "no_wrap": True}),
+    ]
+    if has_class:
+        cols.append(("Class", {"style": "dim", "no_wrap": True, "justify": "center"}))
+    cols.append(("Function", {"no_wrap": True}))
+    cols.append(("← Caller / → Callee", {}))
+    t = _make_table(*cols)
+    _add_grouped_rows(
+        t,
+        fns,
+        has_class,
+        "+",
+        lambda fn: [
+            _fn_label(fn.function_id, is_new=True, color_map=color_map),
+            _connections_cell(fn, color_map),
+        ],
+    )
+    return t
+
+
+def _connections_cell(fn: AddedFunctionInfo, color_map: dict[str, str]) -> str:
+    lines: list[str] = []
+
+    if fn.is_entry_point:
+        lines.append("[dim]entry point[/dim]")
+    else:
+        new_set = set(fn.new_callers)
+        all_callers = fn.existing_callers + fn.new_callers
+        shown, rest = _truncate(all_callers, _CALLER_MAX)
+        parts = [_fn_label(c, is_new=c in new_set, color_map=color_map) for c in shown]
+        if rest:
+            parts.append(f"[dim]+{rest}…[/dim]")
+        lines.append("[dim]←[/dim] " + ", ".join(parts))
+
+    all_calls = fn.existing_calls + fn.new_calls
+    if all_calls:
+        new_set = set(fn.new_calls)
+        shown, rest = _truncate(all_calls, _CALLEE_MAX)
+        parts = [_fn_label(c, is_new=c in new_set, color_map=color_map) for c in shown]
+        if rest:
+            parts.append(f"[dim]+{rest}…[/dim]")
+        lines.append("[dim]→[/dim] " + ", ".join(parts))
+
+    return "\n".join(lines)
+
+
+def _modified_table(functions: list[ModifiedFunctionInfo], color_map: dict[str, str]) -> Table:
+    fns = sorted(functions, key=lambda f: (*_group_key(f), _name(f.function_id)))
+    has_class = any(fn.class_name for fn in fns)
+    cols: list[tuple[str, dict]] = [
+        ("", {"width": 1, "style": "yellow bold"}),
+        ("File", {"style": "dim", "no_wrap": True}),
+    ]
+    if has_class:
+        cols.append(("Class", {"style": "dim", "no_wrap": True, "justify": "center"}))
+    cols.append(("Function", {"no_wrap": True}))
+    cols.append(("Changes", {}))
+    t = _make_table(*cols)
+    _add_grouped_rows(
+        t,
+        fns,
+        has_class,
+        "~",
+        lambda fn: [_name(fn.function_id), _changes_cell(fn, color_map)],
+    )
+    return t
+
+
+def _changes_cell(fn: ModifiedFunctionInfo, color_map: dict[str, str]) -> str:
+    lines: list[str] = []
+
+    if fn.signature_changed:
+        old_sig = _fmt_sig(fn.old_params, fn.old_return_type)
+        new_sig = _fmt_sig(fn.new_params, fn.new_return_type)
+        lines.append(f"[dim]was[/dim] {old_sig}  [dim]→[/dim]  [dim]now[/dim] {new_sig}")
+
+    added_calls = fn.calls_added_new + fn.calls_added_existing
+    if added_calls:
+        new_set = set(fn.calls_added_new)
+        shown, rest = _truncate(added_calls, _CALLEE_MAX)
+        parts = [_fn_label(c, is_new=c in new_set, color_map=color_map) for c in shown]
+        if rest:
+            parts.append(f"[dim]+{rest}…[/dim]")
+        lines.append("[green]+[/green] " + ", ".join(parts))
+
+    if fn.calls_removed:
+        shown, rest = _truncate(fn.calls_removed, _CALLEE_MAX)
+        parts = [f"[dim]{_name(c)}[/dim]" for c in shown]
+        if rest:
+            parts.append(f"[dim]+{rest}…[/dim]")
+        lines.append("[red]-[/red] " + ", ".join(parts))
+
+    if not lines:
+        lines.append("[dim]body changed[/dim]")
+
+    return "\n".join(lines)
+
+
+def _removed_table(functions: list[RemovedFunctionInfo]) -> Table:
+    fns = sorted(functions, key=lambda f: (*_group_key(f), _name(f.function_id)))
+    has_class = any(fn.class_name for fn in fns)
+    cols: list[tuple[str, dict]] = [
+        ("", {"width": 1, "style": "red bold"}),
+        ("File", {"style": "dim", "no_wrap": True}),
+    ]
+    if has_class:
+        cols.append(("Class", {"style": "dim", "no_wrap": True, "justify": "center"}))
+    cols.append(("Function", {"no_wrap": True}))
+    cols.append(("Was Called By", {}))
+    t = _make_table(*cols)
+    _add_grouped_rows(t, fns, has_class, "-", _removed_extra_cells)
+    return t
+
+
+def _removed_extra_cells(fn: RemovedFunctionInfo) -> list[str]:
+    shown, rest = _truncate(fn.was_called_by, _CALLER_MAX)
+    parts = [f"[dim]{_name(c)}[/dim]" for c in shown]
+    if rest:
+        parts.append(f"[dim]+{rest}…[/dim]")
+    return [_name(fn.function_id), ", ".join(parts) if parts else "[dim]—[/dim]"]
+
+
+# ---------------------------------------------------------------------------
+# Issues
+# ---------------------------------------------------------------------------
+
+
+def _render_issues(issues: list[IssueItem]) -> None:
+    if not issues:
+        return
+    console.print()
+    console.rule("[bold]Issues[/bold]", style="dim")
+    console.print()
+    for issue in issues:
+        console.print(
+            f"  [bold red]⚠[/bold red]  [yellow]{_lbl(issue.function_id)}[/yellow]"
+            f" — {issue.message}"
+        )
