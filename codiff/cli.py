@@ -49,6 +49,12 @@ def main():
         help="Head git ref to compare to (default: working tree)",
     )
     diff_parser.add_argument(
+        "--include-tests",
+        action="store_true",
+        default=False,
+        help="Include test functions in the diff output (hidden by default)",
+    )
+    diff_parser.add_argument(
         "--repo",
         default=".",
         metavar="PATH",
@@ -89,7 +95,12 @@ def main():
         setup_repository(args.repo_path)
 
     elif args.command == "diff":
-        _run_diff(repo_path=args.repo, base_ref=args.base, head_ref=args.head)
+        _run_diff(
+            repo_path=args.repo,
+            base_ref=args.base,
+            head_ref=args.head,
+            include_tests=args.include_tests,
+        )
 
     elif args.command == "init":
         _run_init(repo_path=args.repo, agent=args.agent)
@@ -130,7 +141,12 @@ def _init_claude(repo_path: str) -> None:
     print("\n  Restart Claude Code to load the new MCP server.\n")
 
 
-def _run_diff(repo_path: str, base_ref: str, head_ref: str | None = None) -> None:
+def _run_diff(
+    repo_path: str,
+    base_ref: str,
+    head_ref: str | None = None,
+    include_tests: bool = False,
+) -> None:
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import db_path_for, ensure_indexed
@@ -154,7 +170,9 @@ def _run_diff(repo_path: str, base_ref: str, head_ref: str | None = None) -> Non
 
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
-    render(result, base_ref=base_ref, head_ref=head_ref or "working tree")
+    render(
+        result, base_ref=base_ref, head_ref=head_ref or "working tree", include_tests=include_tests
+    )
 
 
 if __name__ == "__main__":

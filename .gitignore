@@ -1,3 +1,7 @@
+# Agent configuration (project-specific, not committed)
+.mcp.json
+CLAUDE.md
+
 # Database
 .codiff.db
 *.db

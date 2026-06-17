@@ -90,6 +90,7 @@ def codiff_diff(
     repo_path: str = ".",
     base_ref: str = "HEAD",
     head_ref: Optional[str] = None,
+    include_tests: bool = False,
 ) -> str:
     """Render the structural call-graph diff directly to the user's terminal."""
     import os
@@ -111,7 +112,9 @@ def codiff_diff(
         head = build_from_path(repo_path)
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
-    render(result, base_ref=base_ref, head_ref=head_ref or "working tree")
+    render(
+        result, base_ref=base_ref, head_ref=head_ref or "working tree", include_tests=include_tests
+    )
     return ""
 
 
