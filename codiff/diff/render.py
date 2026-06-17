@@ -29,7 +29,7 @@ from codiff.diff.analysis import (
     RemovedFunctionInfo,
 )
 
-console = Console()
+console = Console(force_terminal=True)
 
 _CALLER_MAX = 5
 _CALLEE_MAX = 6
@@ -480,6 +480,22 @@ def _removed_extra_cells(fn: RemovedFunctionInfo) -> list[str]:
 # ---------------------------------------------------------------------------
 # Issues
 # ---------------------------------------------------------------------------
+
+
+def render_to_string(result: AnalysisResult, base_ref: str = "HEAD") -> str:
+    """Return the rendered diff report as a plain-text string (no ANSI colors)."""
+    from io import StringIO
+
+    buf = StringIO()
+    cap = Console(file=buf, no_color=True, force_terminal=False, width=120)
+    global console
+    _old = console
+    console = cap
+    try:
+        render(result, base_ref)
+    finally:
+        console = _old
+    return buf.getvalue()
 
 
 def _render_issues(issues: list[IssueItem]) -> None:

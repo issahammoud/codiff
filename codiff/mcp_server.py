@@ -1,0 +1,114 @@
+"""MCP server — exposes codiff's structural diff as a tool for coding agents.
+
+Run with:
+    codiff-mcp          (after `pip install codiff[mcp]`)
+    python -m codiff.mcp_server
+
+Configure in Claude Code (.mcp.json in the project root):
+    {
+      "mcpServers": {
+        "codiff": { "command": "codiff-mcp" }
+      }
+    }
+"""
+
+import sys
+
+from mcp.server.fastmcp import FastMCP
+from rich.console import Console
+
+# The MCP server communicates over stdio, so stdout is the JSON-RPC pipe.
+# Open /dev/tty directly so Rich renders to the user's terminal with full
+# colors and formatting — identical to running `codiff diff` from the CLI.
+try:
+    _tty = open("/dev/tty", "w")
+    _console = Console(file=_tty, force_terminal=True)
+except OSError:
+    _console = Console(file=sys.stderr, force_terminal=True)
+
+# Replace the module-level console in render.py before any render calls.
+import codiff.diff.render as _render_mod
+
+_render_mod.console = _console
+
+mcp = FastMCP("codiff")
+
+_DESCRIPTION = """\
+Show the structural call-graph diff of the current Python codebase against a
+base git reference.
+
+WHEN TO CALL
+Call this tool AFTER making code changes and BEFORE committing. Use it to show
+the user what was architecturally changed — not a line diff, but a
+function-level view of how the call graph was rewired. The output is rendered
+directly in the user's terminal with full colors and formatting.
+
+OUTPUT FORMAT
+The output is split into two top-level groups: Source and Tests.
+Within each group there are Added, Modified, and Removed tables.
+Columns: File | [Class] | Function | context column.
+
+ADDED TABLE — "← Caller / → Callee" column:
+  "entry point"  nothing calls this function; it is new public surface (API,
+                 CLI command, test entry, etc.)
+  "← caller"    an existing function that now calls this new function —
+                 this is where the new code hooks into the existing codebase
+  "→ callee"    a function this new function calls
+
+  WHITE names = functions that already existed before this diff
+  GRAY  names = functions also added in this same diff
+
+MODIFIED TABLE — "Changes" column:
+  "body changed"           implementation changed, same signature and calls
+  "+ callee"               this function now calls callee
+  "- callee"               this function no longer calls callee
+  "was (...) → now (...)"  signature changed
+
+REMOVED TABLE — "Was Called By" lists what used to call the removed function.
+
+CHAIN COLORS
+Functions that belong to the same connected call chain share a color across
+the entire output (both the Function column and every Caller/Callee
+reference). All cyan names are one chain; all magenta names are another.
+This lets you visually trace a feature end-to-end at a glance.
+Gray = pre-existing code (context). White = new but isolated.
+
+ORDERING
+Within each (file, class) block, entry points appear first, then their
+callees in depth-first order so each call chain reads top-to-bottom.
+
+ISSUES section flags things that may need attention:
+  • Signature changes with callers not yet updated
+  • Functions that lost all callers (newly orphaned)
+  • High fan-in edits (a heavily-used function was modified)
+"""
+
+
+@mcp.tool(description=_DESCRIPTION)
+def codiff_diff(repo_path: str = ".", base_ref: str = "HEAD") -> str:
+    """Render the structural call-graph diff directly to the user's terminal."""
+    import os
+
+    from codiff.diff.analysis import analyze
+    from codiff.diff.differ import diff_snapshots
+    from codiff.diff.indexer import db_path_for, ensure_indexed
+    from codiff.diff.render import render
+    from codiff.diff.snapshot import build_from_path, load_from_db
+
+    repo_path = os.path.abspath(repo_path)
+    ensure_indexed(repo_path, base_ref)
+    db = db_path_for(repo_path)
+    base = load_from_db(db)
+    head = build_from_path(repo_path)
+    graph_diff = diff_snapshots(base, head)
+    result = analyze(graph_diff, base, head)
+    render(result, base_ref=base_ref)
+    return ""
+
+
+def main() -> None:
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()
