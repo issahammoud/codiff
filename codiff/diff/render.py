@@ -523,7 +523,9 @@ def _panel_min_width(file_path: str, funcs: dict, color_map: dict[str, str]) -> 
         label = f"~ {_display_name(fn)}"
         if fn.signature_changed:
             label += "  sig changed"
-        elif not fn.calls_added_new and not fn.calls_added_existing and not fn.calls_removed:
+        elif fn.calls_added_new or fn.calls_added_existing or fn.calls_removed:
+            label += "  calls changed"
+        else:
             label += "  body changed"
         rows.append(len(label))
     for fn in funcs["removed"]:
@@ -639,13 +641,14 @@ def _build_file_panel(
         if not first:
             content.append("\n\n" if d == 0 else "\n")
         first = False
-        color = color_map.get(fn.function_id, "green")
+        chain_color = color_map.get(fn.function_id)
+        name_style = f"bold {chain_color}" if chain_color else "bold"
         if d == 0:
             content.append("+ ", style="bold green")
         else:
             content.append("  " * d, style="")
             content.append("→ ", style="dim green")
-        content.append(_display_name(fn), style=f"bold {color}")
+        content.append(_display_name(fn), style=name_style)
         if fn.is_entry_point:
             content.append("  entry point", style="dim")
 
@@ -654,11 +657,13 @@ def _build_file_panel(
             content.append("\n")
         first = False
         content.append("~ ", style="bold yellow")
-        fn_color = color_map.get(fn.function_id, "yellow")
-        content.append(_display_name(fn), style=fn_color)
+        chain_color = color_map.get(fn.function_id)
+        content.append(_display_name(fn), style=chain_color if chain_color else "default")
         if fn.signature_changed:
             content.append("  sig changed", style="dim")
-        elif not fn.calls_added_new and not fn.calls_added_existing and not fn.calls_removed:
+        elif fn.calls_added_new or fn.calls_added_existing or fn.calls_removed:
+            content.append("  calls changed", style="dim")
+        else:
             content.append("  body changed", style="dim")
 
     for fn in sorted(funcs["removed"], key=lambda f: _display_name(f)):
@@ -666,7 +671,8 @@ def _build_file_panel(
             content.append("\n")
         first = False
         content.append("- ", style="bold red")
-        content.append(_display_name(fn), style="red")
+        chain_color = color_map.get(fn.function_id)
+        content.append(_display_name(fn), style=chain_color if chain_color else "default")
 
     return Panel(
         content,
