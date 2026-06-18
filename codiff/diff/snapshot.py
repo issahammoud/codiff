@@ -9,37 +9,14 @@ Both return a GraphSnapshot with the same structure so the differ can compare th
 
 import logging
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from codiff.schema.diff import GraphSnapshot, NodeInfo
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class NodeInfo:
-    """Everything we need about a single function for diffing."""
-
-    function_id: str
-    name: str
-    file_path: str
-    class_name: Optional[str]
-    parameters: list[dict]  # [{name, type, value}, ...]
-    return_type: Optional[str]
-    calls: list[str]  # resolved callee function_ids
-    code: str  # used to detect implementation changes
-
-
-@dataclass
-class GraphSnapshot:
-    """Nodes and edges of a resolved call graph at one point in time."""
-
-    nodes: dict[str, NodeInfo] = field(default_factory=dict)
-    # Edges are (caller_id, callee_id) — only internal (both ends in nodes)
-    edges: set[tuple[str, str]] = field(default_factory=set)
 
 
 def _build_edges(snapshot: GraphSnapshot) -> None:
@@ -106,11 +83,13 @@ def build_from_ref(repo_path: str, ref: str) -> GraphSnapshot:
 def build_from_path(repo_path: str) -> GraphSnapshot:
     """Parse the working tree at *repo_path* in memory and return a GraphSnapshot.
 
-    Nothing is written to disk. Uses the same CodeParser + CallResolver pipeline
+    Nothing is written to disk. Uses the same parsers + resolvers pipeline
     as the indexer, but discards results after building the snapshot.
     """
-    from codiff.code_parsing import CodeParser, is_venv_dir, resolve_internal_calls
+    from codiff.parsers import CodeParser
+    from codiff.resolvers import resolve_internal_calls
     from codiff.setup import build_modules_dict, build_package_exports
+    from codiff.utils.files import is_venv_dir
     from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
 
     parser = CodeParser()

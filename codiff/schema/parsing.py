@@ -25,7 +25,6 @@ class ClassChunk:
     file_path: str
 
     def to_dict(self):
-        """Convert to dictionary for JSON serialization"""
         return {
             "id": self.id,
             "name": self.name,
@@ -58,7 +57,6 @@ class FunctionChunk:
     var_sources: Optional[Dict[str, str]] = None
 
     def to_dict(self):
-        """Convert to dictionary for JSON serialization"""
         return {
             "id": self.id,
             "name": self.name,

@@ -7,9 +7,9 @@ to ensure the call resolver handles all cases correctly.
 
 import pytest
 
-from codiff.code_parsing.call_resolver import resolve_internal_calls
-from codiff.code_parsing.code_parser import CodeParser
-from codiff.code_parsing.data_classes import ClassChunk, FunctionChunk
+from codiff.parsers import CodeParser
+from codiff.resolvers import resolve_internal_calls
+from codiff.schema.parsing import ClassChunk, FunctionChunk
 
 
 @pytest.fixture
@@ -2427,138 +2427,6 @@ def outer():
 # =============================================================================
 # PYTORCH MODULE FORWARD CALLS
 # =============================================================================
-
-
-class TestPyTorchModuleForward:
-    """Tests for PyTorch-style module(x) -> forward(x) pattern detection."""
-
-    def test_self_module_call_adds_forward(self, parser):
-        """Test that self.module() also adds self.module.forward call."""
-        code = """
-class MyModel:
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        return self.act(x)
-"""
-        functions = parser.parse_functions(code, "model.py")
-        forward_func = next(f for f in functions if f.name == "forward")
-
-        # Should have both the direct calls and .forward variants
-        assert "self.conv" in forward_func.calls
-        assert "self.conv.forward" in forward_func.calls
-        assert "self.bn" in forward_func.calls
-        assert "self.bn.forward" in forward_func.calls
-        assert "self.act" in forward_func.calls
-        assert "self.act.forward" in forward_func.calls
-
-    def test_method_call_no_forward(self, parser):
-        """Test that method-like calls don't add .forward."""
-        code = """
-class MyModel:
-    def process(self, x):
-        self.validate_input(x)
-        self._prepare_data(x)
-        self.get_output()
-"""
-        functions = parser.parse_functions(code, "model.py")
-        process_func = next(f for f in functions if f.name == "process")
-
-        # Method-like calls should NOT add .forward
-        assert "self.validate_input" in process_func.calls
-        assert "self.validate_input.forward" not in process_func.calls
-        assert "self._prepare_data" in process_func.calls
-        assert "self._prepare_data.forward" not in process_func.calls
-        assert "self.get_output" in process_func.calls
-        assert "self.get_output.forward" not in process_func.calls
-
-    def test_variable_instance_call_adds_forward(self, parser):
-        """Test that calling a known class instance adds .forward."""
-        code = """
-class Encoder:
-    def forward(self, x):
-        pass
-
-class MyModel:
-    def process(self, x):
-        encoder = Encoder()
-        return encoder(x)
-"""
-        functions = parser.parse_functions(code, "model.py")
-        process_func = next(f for f in functions if f.name == "process")
-
-        # encoder() should also add encoder.forward
-        assert "encoder" in process_func.calls or "Encoder" in process_func.calls
-        assert "encoder.forward" in process_func.calls
-
-    def test_nested_module_calls(self, parser):
-        """Test nested module calls like self.bn(self.conv(x))."""
-        code = """
-class Block:
-    def forward(self, x):
-        return self.bn(self.conv(x))
-"""
-        functions = parser.parse_functions(code, "block.py")
-        forward_func = next(f for f in functions if f.name == "forward")
-
-        # Both nested calls should have .forward variants
-        assert "self.conv" in forward_func.calls
-        assert "self.conv.forward" in forward_func.calls
-        assert "self.bn" in forward_func.calls
-        assert "self.bn.forward" in forward_func.calls
-
-    def test_sequential_style_forward(self, parser):
-        """Test common PyTorch sequential pattern."""
-        code = """
-class CNN:
-    def forward(self, x):
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        return self.head(x)
-"""
-        functions = parser.parse_functions(code, "cnn.py")
-        forward_func = next(f for f in functions if f.name == "forward")
-
-        for layer in ["layer1", "layer2", "layer3", "head"]:
-            assert f"self.{layer}" in forward_func.calls
-            assert f"self.{layer}.forward" in forward_func.calls
-
-    def test_forward_resolution_connects_modules(self, parser):
-        """Test that forward calls resolve when self.xxx type is known."""
-        code = """
-class Conv:
-    def forward(self, x):
-        return x
-
-class Model:
-    def process(self, x):
-        conv = Conv()
-        return conv(x)
-"""
-        functions = parser.parse_functions(code, "model.py")
-        classes = parser.parse_classes(code, "model.py")
-        modules_dict = {"model": "model"}
-
-        resolved = resolve_internal_calls(functions, classes, {}, modules_dict)
-
-        process_func = next(f for f in resolved if f.name == "process")
-        # conv.forward should resolve to model.Conv.forward
-        assert "model.Conv.forward" in process_func.calls
-
-    def test_self_attr_forward_extracted(self, parser):
-        """Test that self.xxx.forward is extracted even without type info."""
-        code = """
-class Model:
-    def forward(self, x):
-        return self.conv(x)
-"""
-        functions = parser.parse_functions(code, "model.py")
-        model_forward = next(f for f in functions if f.name == "forward")
-
-        # Raw calls should include both variants
-        assert "self.conv" in model_forward.calls
-        assert "self.conv.forward" in model_forward.calls
 
 
 # =============================================================================

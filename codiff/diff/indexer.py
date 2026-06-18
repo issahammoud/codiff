@@ -17,21 +17,14 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from sqlalchemy import create_engine
-from sqlalchemy import event as sa_event
 from sqlalchemy.orm import sessionmaker
 
-from codiff.code_parsing import CodeParser, resolve_internal_calls
-from codiff.db import Base, Class, CommitMeta, Function, Repository
+from codiff.db import Base, Class, CommitMeta, Function, Repository, get_db_path, make_sync_engine
+from codiff.parsers import CodeParser
+from codiff.resolvers import resolve_internal_calls
 from codiff.setup import build_modules_dict, build_package_exports
 
 logger = logging.getLogger(__name__)
-
-DB_FILENAME = ".codiff.db"
-
-
-def db_path_for(repo_path: str) -> str:
-    return os.path.join(os.path.abspath(repo_path), DB_FILENAME)
 
 
 def resolve_sha(repo_path: str, ref: str) -> str:
@@ -51,7 +44,7 @@ def current_indexed_sha(db_path: str) -> str | None:
     if not os.path.exists(db_path):
         return None
     try:
-        engine = _make_engine(db_path)
+        engine = make_sync_engine(db_path)
         Base.metadata.create_all(engine)
         Session = sessionmaker(bind=engine)
         with Session() as db:
@@ -69,7 +62,7 @@ def ensure_indexed(repo_path: str, ref: str = "HEAD") -> str:
     Returns the resolved commit SHA.
     """
     repo_path = os.path.abspath(repo_path)
-    db = db_path_for(repo_path)
+    db = get_db_path(repo_path)
     sha = resolve_sha(repo_path, ref)
 
     current = current_indexed_sha(db)
@@ -92,19 +85,6 @@ def ensure_indexed(repo_path: str, ref: str = "HEAD") -> str:
 # ---------------------------------------------------------------------------
 
 
-def _make_engine(db_path: str):
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
-
-    @sa_event.listens_for(engine, "connect")
-    def _set_wal(dbapi_conn, _):
-        cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL")
-        cur.execute("PRAGMA synchronous=NORMAL")
-        cur.close()
-
-    return engine
-
-
 def _full_index(repo_path: str, db_path: str, ref: str, sha: str) -> None:
     """Extract the git ref to a tmpdir, parse it, write to DB."""
     proc = subprocess.run(
@@ -121,7 +101,7 @@ def _full_index(repo_path: str, db_path: str, ref: str, sha: str) -> None:
 
 def _write_snapshot(source_path: str, db_path: str, sha: str) -> None:
     """Parse *source_path* and write all functions/classes to *db_path*."""
-    engine = _make_engine(db_path)
+    engine = make_sync_engine(db_path)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     db = Session()

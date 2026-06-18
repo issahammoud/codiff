@@ -54,6 +54,7 @@ def main():
         default=False,
         help="Include test functions in the diff output (hidden by default)",
     )
+
     diff_parser.add_argument(
         "--repo",
         default=".",
@@ -147,9 +148,10 @@ def _run_diff(
     head_ref: str | None = None,
     include_tests: bool = False,
 ) -> None:
+    from codiff.db import get_db_path
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
-    from codiff.diff.indexer import db_path_for, ensure_indexed
+    from codiff.diff.indexer import ensure_indexed
     from codiff.diff.render import render
     from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
 
@@ -164,14 +166,17 @@ def _run_diff(
         # Head is the working tree — use the cached SQLite index for the base.
         logging.getLogger(__name__).info("Ensuring base index for %s at %s", repo_path, base_ref)
         ensure_indexed(repo_path, base_ref)
-        db = db_path_for(repo_path)
+        db = get_db_path(repo_path)
         base = load_from_db(db)
         head = build_from_path(repo_path)
 
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
     render(
-        result, base_ref=base_ref, head_ref=head_ref or "working tree", include_tests=include_tests
+        result,
+        base_ref=base_ref,
+        head_ref=head_ref or "working tree",
+        include_tests=include_tests,
     )
 
 

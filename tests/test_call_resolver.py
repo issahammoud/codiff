@@ -13,9 +13,9 @@ Tests cover:
 
 import pytest
 
-from codiff.code_parsing.call_resolver import CallResolver, resolve_internal_calls
-from codiff.code_parsing.code_parser import CodeParser
-from codiff.code_parsing.data_classes import ClassChunk, FunctionChunk
+from codiff.parsers import CodeParser
+from codiff.resolvers import CallResolver, resolve_internal_calls
+from codiff.schema.parsing import ClassChunk, FunctionChunk
 
 
 @pytest.fixture
