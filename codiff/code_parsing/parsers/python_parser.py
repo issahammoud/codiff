@@ -11,7 +11,7 @@ import tree_sitter_python as tspython
 from tree_sitter import Language, Query
 
 from codiff.code_parsing.data_classes import ClassChunk, FunctionChunk, Parameter
-from codiff.code_parsing.language_parser import LanguageParser
+from codiff.code_parsing.parsers.language_parser import LanguageParser
 
 
 def is_venv_dir(root: str, d: str) -> bool:

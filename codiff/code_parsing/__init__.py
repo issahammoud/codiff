@@ -1,7 +1,7 @@
 from codiff.code_parsing.call_resolver import CallResolver, resolve_internal_calls
 from codiff.code_parsing.data_classes import ClassChunk, FunctionChunk, Parameter
-from codiff.code_parsing.language_parser import LanguageParser
-from codiff.code_parsing.python_parser import PythonParser, is_venv_dir
+from codiff.code_parsing.parsers.language_parser import LanguageParser
+from codiff.code_parsing.parsers.python_parser import PythonParser, is_venv_dir
 
 # Backward-compatible alias
 CodeParser = PythonParser
