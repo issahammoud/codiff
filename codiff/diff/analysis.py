@@ -5,78 +5,16 @@ No I/O, no DB access. Every fact is computed deterministically.
 """
 
 from collections import defaultdict
-from dataclasses import dataclass
-from typing import Optional
 
-from codiff.diff.differ import GraphDiff
-from codiff.diff.snapshot import GraphSnapshot
-
-# ---------------------------------------------------------------------------
-# Result dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class SummaryStats:
-    added_functions: int
-    removed_functions: int
-    modified_functions: int
-    modules_touched: list[str]  # sorted distinct file paths
-
-
-@dataclass
-class AddedFunctionInfo:
-    """A new function and how it connects to the rest of the graph."""
-
-    function_id: str
-    file_path: str
-    class_name: Optional[str]
-    existing_callers: list[str]  # callers that existed in base
-    new_callers: list[str]  # callers that are also new functions
-    existing_calls: list[str]  # callees that existed in base
-    new_calls: list[str]  # callees that are also new functions
-    is_entry_point: bool  # True when no callers at all
-
-
-@dataclass
-class ModifiedFunctionInfo:
-    """An existing function whose code, calls, or signature changed."""
-
-    function_id: str
-    file_path: str
-    class_name: Optional[str]
-    signature_changed: bool
-    old_params: list[dict]
-    new_params: list[dict]
-    old_return_type: Optional[str]
-    new_return_type: Optional[str]
-    calls_added_new: list[str]  # newly called functions that are also new
-    calls_added_existing: list[str]  # newly called functions that already existed
-    calls_removed: list[str]  # callees no longer called (were in base graph)
-    callers: list[str]  # callers in head (context for who is affected)
-
-
-@dataclass
-class RemovedFunctionInfo:
-    """A function that was deleted."""
-
-    function_id: str
-    file_path: str
-    class_name: Optional[str]
-    was_called_by: list[str]  # callers in base
-
-
-@dataclass
-class AnalysisResult:
-    summary: SummaryStats
-    added: list[AddedFunctionInfo]
-    modified: list[ModifiedFunctionInfo]
-    removed: list[RemovedFunctionInfo]
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+from codiff.schema.diff import (
+    AddedFunctionInfo,
+    AnalysisResult,
+    GraphDiff,
+    GraphSnapshot,
+    ModifiedFunctionInfo,
+    RemovedFunctionInfo,
+    SummaryStats,
+)
 
 
 def analyze(
@@ -95,11 +33,6 @@ def analyze(
         modified=_modified(diff, added_ids, base, head, head_reverse),
         removed=_removed(diff, base_reverse),
     )
-
-
-# ---------------------------------------------------------------------------
-# Section computations
-# ---------------------------------------------------------------------------
 
 
 def _reverse_index(snapshot: GraphSnapshot) -> dict[str, set[str]]:

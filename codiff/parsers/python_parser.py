@@ -10,8 +10,8 @@ import os
 import tree_sitter_python as tspython
 from tree_sitter import Language, Query
 
-from codiff.code_parsing.data_classes import ClassChunk, FunctionChunk, Parameter
-from codiff.code_parsing.parsers.language_parser import LanguageParser
+from codiff.parsers.language_parser import LanguageParser
+from codiff.schema.parsing import ClassChunk, FunctionChunk, Parameter
 
 
 def is_venv_dir(root: str, d: str) -> bool:

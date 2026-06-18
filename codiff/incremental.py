@@ -11,8 +11,9 @@ from pathlib import Path
 from sqlalchemy import Text, cast, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from codiff.code_parsing import CodeParser, is_venv_dir, resolve_internal_calls
 from codiff.db import Class, FileState, Function, get_session_maker
+from codiff.parsers import CodeParser, is_venv_dir
+from codiff.resolvers import resolve_internal_calls
 from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
 
 logger = logging.getLogger(__name__)

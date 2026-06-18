@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 
 from tree_sitter import Language, Parser, Query, QueryCursor
 
-from codiff.code_parsing.data_classes import ClassChunk, FunctionChunk
+from codiff.schema.parsing import ClassChunk, FunctionChunk
 
 
 class LanguageParser(ABC):

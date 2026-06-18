@@ -23,7 +23,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from codiff.diff.analysis import (
+from codiff.schema.diff import (
     AddedFunctionInfo,
     AnalysisResult,
     ModifiedFunctionInfo,

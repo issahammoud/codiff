@@ -8,19 +8,7 @@ file_path changed. This includes pure implementation changes (same signature,
 same call list) so blast-radius analysis sees the full change set.
 """
 
-from dataclasses import dataclass, field
-
-from codiff.diff.snapshot import GraphSnapshot, NodeInfo
-
-
-@dataclass
-class GraphDiff:
-    added_nodes: dict[str, NodeInfo] = field(default_factory=dict)
-    removed_nodes: dict[str, NodeInfo] = field(default_factory=dict)
-    # id → (old_node, new_node)
-    modified_nodes: dict[str, tuple[NodeInfo, NodeInfo]] = field(default_factory=dict)
-    added_edges: set[tuple[str, str]] = field(default_factory=set)
-    removed_edges: set[tuple[str, str]] = field(default_factory=set)
+from codiff.schema.diff import GraphDiff, GraphSnapshot, NodeInfo
 
 
 def diff_snapshots(base: GraphSnapshot, head: GraphSnapshot) -> GraphDiff:

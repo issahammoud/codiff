@@ -8,8 +8,9 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from codiff.code_parsing import CodeParser, is_venv_dir, resolve_internal_calls
 from codiff.db import Base, Class, Function, Repository, get_db_path
+from codiff.parsers import CodeParser, is_venv_dir
+from codiff.resolvers import resolve_internal_calls
 from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
 
 logger = logging.getLogger(__name__)

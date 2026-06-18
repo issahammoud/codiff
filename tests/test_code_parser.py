@@ -11,7 +11,7 @@ Tests cover:
 
 import pytest
 
-from codiff.code_parsing import CodeParser
+from codiff.parsers import CodeParser
 
 
 @pytest.fixture

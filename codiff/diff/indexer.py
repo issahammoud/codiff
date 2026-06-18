@@ -21,8 +21,9 @@ from sqlalchemy import create_engine
 from sqlalchemy import event as sa_event
 from sqlalchemy.orm import sessionmaker
 
-from codiff.code_parsing import CodeParser, resolve_internal_calls
 from codiff.db import Base, Class, CommitMeta, Function, Repository
+from codiff.parsers import CodeParser
+from codiff.resolvers import resolve_internal_calls
 from codiff.setup import build_modules_dict, build_package_exports
 
 logger = logging.getLogger(__name__)

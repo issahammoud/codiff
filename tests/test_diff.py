@@ -5,7 +5,7 @@ All tests use synthetic GraphSnapshot fixtures — no DB, no real repo, no git.
 
 from codiff.diff.analysis import analyze
 from codiff.diff.differ import _node_changed, diff_snapshots
-from codiff.diff.snapshot import GraphSnapshot, NodeInfo
+from codiff.schema.diff import GraphSnapshot, NodeInfo
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
