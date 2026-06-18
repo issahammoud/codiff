@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>codiff — structural diff</title>
+<script src="https://unpkg.com/vis-network@9.1.9/dist/vis-network.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 20px;
+    background: #181825;
+    border-bottom: 1px solid #313244;
+    flex-shrink: 0;
+  }
+  header .logo { font-weight: 700; font-size: 15px; color: #89b4fa; letter-spacing: 0.5px; }
+  header .ref  { font-size: 13px; color: #6c7086; font-family: monospace; }
+  header .ref span { color: #a6e3a1; }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    margin-left: auto;
+    font-size: 12px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .dot {
+    width: 10px; height: 10px; border-radius: 2px;
+  }
+  .dot-added    { background: #a6e3a1; }
+  .dot-modified { background: #f9e2af; }
+  .dot-removed  { background: #f38ba8; }
+  .dot-existing { background: #585b70; }
+
+  /* ── Main layout ── */
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  #graph {
+    flex: 1;
+    background: #1e1e2e;
+  }
+
+  /* ── Detail panel ── */
+  #panel {
+    width: 280px;
+    background: #181825;
+    border-left: 1px solid #313244;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+
+  .panel-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #45475a;
+    font-size: 13px;
+    gap: 8px;
+  }
+  .panel-empty svg { opacity: 0.3; }
+
+  .panel-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: none;
+  }
+
+  .panel-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+  }
+  .badge-added    { background: #1e3a2f; color: #a6e3a1; }
+  .badge-modified { background: #3a2e1a; color: #f9e2af; }
+  .badge-removed  { background: #3a1a1e; color: #f38ba8; }
+  .badge-existing { background: #2a2a3a; color: #89b4fa; }
+
+  .panel-name {
+    font-family: monospace;
+    font-size: 15px;
+    font-weight: 600;
+    color: #cdd6f4;
+    margin-bottom: 4px;
+    word-break: break-all;
+  }
+
+  .panel-file {
+    font-size: 11px;
+    color: #6c7086;
+    font-family: monospace;
+    margin-bottom: 16px;
+  }
+
+  .panel-section {
+    margin-bottom: 14px;
+  }
+  .panel-section-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #585b70;
+    margin-bottom: 6px;
+  }
+  .panel-item {
+    font-family: monospace;
+    font-size: 12px;
+    color: #bac2de;
+    padding: 3px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .panel-item .arrow { color: #45475a; }
+  .panel-item .new-tag {
+    font-size: 10px;
+    color: #a6e3a1;
+    background: #1e3a2f;
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .panel-item .removed-tag {
+    font-size: 10px;
+    color: #f38ba8;
+    background: #3a1a1e;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-decoration: line-through;
+  }
+
+  .panel-change {
+    font-size: 11px;
+    font-family: monospace;
+    color: #9399b2;
+    background: #11111b;
+    border-radius: 6px;
+    padding: 8px 10px;
+    line-height: 1.6;
+  }
+  .panel-change .old { color: #f38ba8; }
+  .panel-change .new { color: #a6e3a1; }
+
+  .entry-point-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #89b4fa;
+    background: #1a2a3a;
+    padding: 3px 8px;
+    border-radius: 4px;
+    margin-bottom: 12px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">codiff</span>
+  <span class="ref"><span>HEAD</span> → working tree</span>
+  <div class="legend">
+    <div class="legend-item"><div class="dot dot-added"></div>Added</div>
+    <div class="legend-item"><div class="dot dot-modified"></div>Modified</div>
+    <div class="legend-item"><div class="dot dot-removed"></div>Removed</div>
+    <div class="legend-item"><div class="dot dot-existing"></div>Existing</div>
+  </div>
+</header>
+
+<div class="main">
+  <div id="graph"></div>
+  <div id="panel">
+    <div class="panel-empty" id="panel-empty">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      Click a node to see details
+    </div>
+    <div class="panel-content" id="panel-content"></div>
+  </div>
+</div>
+
+<script>
+const DIFF = {"added":[{"id":"codiff.diff.render._fn_tree_label","name":"_fn_tree_label","file":"codiff/diff/render.py","class_name":null,"is_entry_point":true,"existing_callers":[],"new_callers":[],"existing_calls":["codiff.diff.render._fn_label"],"new_calls":[]},{"id":"codiff.diff.render._render_added_trees","name":"_render_added_trees","file":"codiff/diff/render.py","class_name":null,"is_entry_point":false,"existing_callers":[],"new_callers":["codiff.diff.render._render_tree_group"],"existing_calls":["codiff.diff.render._group_key","codiff.diff.render._order_group"],"new_calls":["codiff.diff.render._render_added_trees.build_subtree"]},{"id":"codiff.diff.render._render_added_trees.build_subtree","name":"build_subtree","file":"codiff/diff/render.py","class_name":null,"is_entry_point":false,"existing_callers":[],"new_callers":["codiff.diff.render._render_added_trees"],"existing_calls":["codiff.diff.render._fn_label","codiff.diff.render._name"],"new_calls":[]},{"id":"codiff.diff.render._render_modified_trees","name":"_render_modified_trees","file":"codiff/diff/render.py","class_name":null,"is_entry_point":false,"existing_callers":[],"new_callers":["codiff.diff.render._render_tree_group"],"existing_calls":["codiff.diff.render._fmt_sig","codiff.diff.render._fn_label","codiff.diff.render._group_key","codiff.diff.render._name"],"new_calls":[]},{"id":"codiff.diff.render._render_removed_trees","name":"_render_removed_trees","file":"codiff/diff/render.py","class_name":null,"is_entry_point":false,"existing_callers":[],"new_callers":["codiff.diff.render._render_tree_group"],"existing_calls":["codiff.diff.render._group_key","codiff.diff.render._name"],"new_calls":[]},{"id":"codiff.diff.render._render_tree_group","name":"_render_tree_group","file":"codiff/diff/render.py","class_name":null,"is_entry_point":false,"existing_callers":[],"new_callers":["codiff.diff.render.render_tree"],"existing_calls":[],"new_calls":["codiff.diff.render._render_added_trees","codiff.diff.render._render_modified_trees","codiff.diff.render._render_removed_trees"]},{"id":"codiff.diff.render.render_tree","name":"render_tree","file":"codiff/diff/render.py","class_name":null,"is_entry_point":true,"existing_callers":[],"new_callers":[],"existing_calls":["codiff.diff.render._build_color_map","codiff.diff.render._partition","codiff.diff.render._render_summary"],"new_calls":["codiff.diff.render._render_tree_group"]}],"modified":[{"id":"codiff.cli._run_diff","name":"_run_diff","file":"codiff/cli.py","class_name":null,"signature_changed":true,"calls_added_new":[],"calls_added_existing":[],"calls_removed":["codiff.diff.render.render"]},{"id":"codiff.cli.main","name":"main","file":"codiff/cli.py","class_name":null,"signature_changed":false,"calls_added_new":[],"calls_added_existing":[],"calls_removed":[]},{"id":"codiff.diff.render._fmt_sig","name":"_fmt_sig","file":"codiff/diff/render.py","class_name":null,"signature_changed":false,"calls_added_new":[],"calls_added_existing":[],"calls_removed":[]}],"removed":[]};
+
+// ── Build node/edge sets ─────────────────────────────────────────────────────
+
+const COLORS = {
+  added:    { bg: '#1e3a2f', border: '#a6e3a1', font: '#a6e3a1' },
+  modified: { bg: '#3a2e1a', border: '#f9e2af', font: '#f9e2af' },
+  removed:  { bg: '#3a1a1e', border: '#f38ba8', font: '#f38ba8' },
+  existing: { bg: '#2a2a35', border: '#585b70', font: '#9399b2' },
+};
+
+const nodeMap = {};  // id → data
+const nodes = [];
+const edges = [];
+const edgeSet = new Set();
+
+function shortName(id) {
+  return id.split('.').pop();
+}
+
+function addNode(id, type, label, file, extra) {
+  if (nodeMap[id]) return;
+  const c = COLORS[type];
+  const n = {
+    id,
+    label: label || shortName(id),
+    color: { background: c.bg, border: c.border, highlight: { background: c.bg, border: '#ffffff' } },
+    font: { color: c.font, size: 13, face: 'monospace' },
+    shape: 'box',
+    borderWidth: 2,
+    borderWidthSelected: 3,
+    margin: { top: 8, bottom: 8, left: 12, right: 12 },
+    _type: type,
+    _file: file,
+    _extra: extra || {},
+  };
+  nodeMap[id] = n;
+  nodes.push(n);
+}
+
+function addEdge(from, to, color, dashes) {
+  const key = `${from}→${to}`;
+  if (edgeSet.has(key)) return;
+  edgeSet.add(key);
+  edges.push({
+    from, to,
+    color: { color, highlight: '#ffffff', opacity: 0.7 },
+    dashes: dashes || false,
+    width: 1.5,
+    arrows: { to: { enabled: true, scaleFactor: 0.7 } },
+    smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 },
+  });
+}
+
+// Added functions
+const addedIds = new Set(DIFF.added.map(f => f.id));
+DIFF.added.forEach(fn => {
+  addNode(fn.id, 'added', fn.name, fn.file, fn);
+});
+
+DIFF.added.forEach(fn => {
+  // Existing callers → new function
+  fn.existing_callers.forEach(cid => {
+    addNode(cid, 'existing', shortName(cid), null, {});
+    addEdge(cid, fn.id, '#585b70');
+  });
+  // New function → new callees
+  fn.new_calls.forEach(cid => {
+    if (addedIds.has(cid)) addEdge(fn.id, cid, '#a6e3a1');
+  });
+  // New function → existing callees (only direct, deduplicated)
+  const uniqExisting = [...new Set(fn.existing_calls)];
+  uniqExisting.slice(0, 3).forEach(cid => {
+    addNode(cid, 'existing', shortName(cid), null, {});
+    addEdge(fn.id, cid, '#585b70');
+  });
+});
+
+// Modified functions
+DIFF.modified.forEach(fn => {
+  addNode(fn.id, 'modified', fn.name, fn.file, fn);
+  fn.calls_added_new.forEach(cid => {
+    if (addedIds.has(cid)) { addNode(cid, 'added', shortName(cid), null, {}); }
+    addEdge(fn.id, cid, '#a6e3a1');
+  });
+  fn.calls_added_existing.forEach(cid => {
+    addNode(cid, 'existing', shortName(cid), null, {});
+    addEdge(fn.id, cid, '#a6e3a1');
+  });
+  fn.calls_removed.forEach(cid => {
+    addNode(cid, 'existing', shortName(cid), null, {});
+    addEdge(fn.id, cid, '#f38ba8', true);
+  });
+});
+
+// Removed functions
+DIFF.removed.forEach(fn => {
+  addNode(fn.id, 'removed', fn.name, fn.file, fn);
+  fn.was_called_by.forEach(cid => {
+    addNode(cid, 'existing', shortName(cid), null, {});
+    addEdge(cid, fn.id, '#f38ba8', true);
+  });
+});
+
+// ── Render graph ─────────────────────────────────────────────────────────────
+
+const container = document.getElementById('graph');
+const network = new vis.Network(container,
+  { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) },
+  {
+    layout: {
+      hierarchical: {
+        enabled: true,
+        direction: 'UD',
+        sortMethod: 'directed',
+        levelSeparation: 90,
+        nodeSpacing: 160,
+        treeSpacing: 200,
+        blockShifting: true,
+        edgeMinimization: true,
+        parentCentralization: true,
+      }
+    },
+    physics: { enabled: false },
+    interaction: { hover: true, tooltipDelay: 0 },
+    edges: { smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 } },
+  }
+);
+
+// ── Detail panel ─────────────────────────────────────────────────────────────
+
+network.on('click', params => {
+  const id = params.nodes[0];
+  if (!id) { showEmpty(); return; }
+  const node = nodeMap[id];
+  if (!node) return;
+  showDetail(id, node);
+});
+
+function showEmpty() {
+  document.getElementById('panel-empty').style.display = 'flex';
+  document.getElementById('panel-content').style.display = 'none';
+}
+
+function showDetail(id, node) {
+  document.getElementById('panel-empty').style.display = 'none';
+  const el = document.getElementById('panel-content');
+  el.style.display = 'block';
+
+  const type = node._type;
+  const extra = node._extra;
+  const file = node._file || (extra && extra.file) || '';
+
+  const badgeClass = `badge-${type}`;
+  const badgeLabel = type.charAt(0).toUpperCase() + type.slice(1);
+
+  let html = `
+    <span class="panel-badge ${badgeClass}">${badgeLabel}</span>
+    <div class="panel-name">${node.label}</div>
+    ${file ? `<div class="panel-file">${file}</div>` : ''}
+  `;
+
+  if (type === 'added' && extra.id) {
+    if (extra.is_entry_point) {
+      html += `<div class="entry-point-badge">⬡ entry point</div>`;
+    }
+    if (extra.existing_callers && extra.existing_callers.length) {
+      html += `<div class="panel-section">
+        <div class="panel-section-title">Called by (existing)</div>
+        ${extra.existing_callers.map(c => `<div class="panel-item"><span class="arrow">←</span>${shortName(c)}</div>`).join('')}
+      </div>`;
+    }
+    if (extra.new_callers && extra.new_callers.length) {
+      html += `<div class="panel-section">
+        <div class="panel-section-title">Called by (new)</div>
+        ${extra.new_callers.map(c => `<div class="panel-item"><span class="arrow">←</span>${shortName(c)} <span class="new-tag">new</span></div>`).join('')}
+      </div>`;
+    }
+    const allCalls = [...new Set([...(extra.new_calls||[]), ...(extra.existing_calls||[])])];
+    if (allCalls.length) {
+      html += `<div class="panel-section">
+        <div class="panel-section-title">Calls</div>
+        ${allCalls.map(c => {
+          const isNew = (extra.new_calls||[]).includes(c);
+          return `<div class="panel-item"><span class="arrow">→</span>${shortName(c)}${isNew ? ' <span class="new-tag">new</span>' : ''}</div>`;
+        }).join('')}
+      </div>`;
+    }
+  }
+
+  if (type === 'modified' && extra.id) {
+    if (extra.signature_changed) {
+      html += `<div class="panel-section">
+        <div class="panel-section-title">Signature changed</div>
+        <div class="panel-change"><span class="new">signature updated</span></div>
+      </div>`;
+    }
+    if (extra.calls_removed && extra.calls_removed.length) {
+      html += `<div class="panel-section">
+        <div class="panel-section-title">Calls removed</div>
+        ${extra.calls_removed.map(c => `<div class="panel-item"><span class="removed-tag">${shortName(c)}</span></div>`).join('')}
+      </div>`;
+    }
+    if (!extra.signature_changed && !extra.calls_removed?.length && !extra.calls_added_new?.length && !extra.calls_added_existing?.length) {
+      html += `<div class="panel-section"><div class="panel-change">Body changed</div></div>`;
+    }
+  }
+
+  if (type === 'removed' && extra.was_called_by) {
+    html += `<div class="panel-section">
+      <div class="panel-section-title">Was called by</div>
+      ${extra.was_called_by.map(c => `<div class="panel-item"><span class="arrow">←</span>${shortName(c)}</div>`).join('')}
+    </div>`;
+  }
+
+  el.innerHTML = html;
+}
+</script>
+</body>
+</html>

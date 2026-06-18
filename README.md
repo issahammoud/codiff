@@ -1,10 +1,10 @@
 # codiff
 
-A structural call-graph diff tool for Python codebases, built to work with coding agents. Instead of a line diff, it shows what changed at the function level — which functions were added and where they hook into existing code, which were modified, which were removed — organized by file and class, with color-coded call chains.
+A structural call-graph diff tool for Python codebases, built to work with coding agents. Instead of a line diff, it shows what changed at the function level — which functions were added and where they hook into existing code, which were modified, which were removed — with color-coded call chains consistent across files.
 
 ## How it works
 
-codiff snapshots the Python call graph at two states (e.g. HEAD vs working tree), computes the node and edge delta, and derives structural facts: added/modified/removed functions, signature changes, orphaned functions, and high fan-in edits. Every fact is computed deterministically from the resolved call graph — no LLM, no embeddings, fully offline.
+codiff snapshots the Python call graph at two states (e.g. HEAD vs working tree), computes the node and edge delta, and derives structural facts: added/modified/removed functions. Every fact is computed deterministically from the resolved call graph — no LLM, no embeddings, fully offline.
 
 ## Requirements
 
@@ -23,9 +23,11 @@ pip install "codiff[mcp]"   # CLI + MCP server for coding agents
 ### CLI
 
 ```bash
-codiff diff                        # diff HEAD vs working tree
-codiff diff --base main            # diff a specific base ref
-codiff diff --repo /path/to/repo   # diff a different repo
+codiff diff                          # diff HEAD vs working tree
+codiff diff --base main              # diff a specific base ref
+codiff diff --head <ref>             # diff two git refs directly
+codiff diff --repo /path/to/repo     # diff a different repo
+codiff diff --include-tests          # include test functions (hidden by default)
 ```
 
 ### MCP integration (Claude Code)
@@ -38,37 +40,39 @@ codiff init --agent claude
 
 This writes `.mcp.json` into the project root, registering the `codiff-mcp` server. Restart Claude Code — the `codiff_diff` tool is then available to the agent.
 
-The agent calls `codiff_diff` automatically before committing. The full colored output renders directly in your terminal, identical to `codiff diff`.
+The agent calls `codiff_diff` at the end of every response that modifies files. The full colored output renders directly in your terminal, identical to `codiff diff`.
 
 ## Reading the output
 
-The output is grouped into **Source** and **Tests**, each with Added, Modified, and Removed tables.
+The output shows one box per changed file. Boxes are laid out side by side when they fit the terminal width, with `────▶` arrows between adjacent connected boxes.
 
-**Added — `← Caller / → Callee` column**
+### Inside each box
 
-| Value | Meaning |
+Functions are listed with an indicator and an annotation:
+
+| Indicator | Meaning |
 |---|---|
-| `entry point` | Nothing calls this function — new public surface |
-| `← caller` | An existing function that now calls this new function (the hook-in point) |
-| `→ callee` | A function this new function calls |
+| `+` green | Function was added |
+| `~` yellow | Function was modified |
+| `-` red | Function was removed |
 
-White names = existing code. Gray names = also new in this diff.
-
-**Modified — `Changes` column**
-
-| Value | Meaning |
+| Annotation | Meaning |
 |---|---|
-| `body changed` | Implementation changed, same signature and calls |
-| `+ callee` | Now calls callee |
-| `- callee` | No longer calls callee |
-| `was (...) → now (...)` | Signature changed |
+| `entry point` | Nothing calls this new function — new public surface |
+| `sig changed` | Parameters or return type changed |
+| `calls changed` | The function now calls different things |
+| `body changed` | Pure implementation change |
 
-**Chain colors**
+For added functions, `→` arrows show intra-file call relationships — a function indented under another calls it.
 
-Functions that form a connected call chain share a color throughout the output — in both the Function column and every Caller/Callee reference. All cyan names belong to one chain, all magenta to another. Gray = pre-existing code. White = new but isolated.
+### Colors
 
-**Ordering**
+Functions that form a connected call chain share a color across the entire output — across boxes, across files. All magenta names belong to one chain, all cyan to another. This is consistent for both added and modified functions.
 
-Within each file/class block, entry points appear first, then their callees in depth-first order so each chain reads top-to-bottom.
+- **Chain color** on the function name — part of a call chain
+- **White** on the function name — added/modified but not connected to any chain
+- **`~` yellow** — always marks a modified function regardless of chain membership
 
-**Issues** (bottom of output) flags: signature changes with callers not yet updated, newly orphaned functions, high fan-in edits.
+### Arrows between boxes
+
+An arrow `────▶` appears between two adjacent boxes when a function in the left box calls a function in the right box. The arrow color matches the callee's chain color.

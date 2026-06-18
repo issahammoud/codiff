@@ -125,14 +125,14 @@ def build_from_path(repo_path: str) -> GraphSnapshot:
     imports_dict: dict = {}
 
     for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [
+        dirs[:] = sorted(
             d
             for d in dirs
             if d not in parser.exclude_dirs
             and not is_venv_dir(root, d)
             and not is_dir_ignored(gitignore, str(repo), root, d)
-        ]
-        for fname in files:
+        )
+        for fname in sorted(files):
             if not fname.endswith(".py"):
                 continue
             fpath = Path(root) / fname
