@@ -5,12 +5,12 @@ import os
 import uuid
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from codiff.db import Base, Class, Function, Repository, get_db_path
-from codiff.parsers import CodeParser, is_venv_dir
+from codiff.db import Base, Class, Function, Repository, get_db_path, make_sync_engine
+from codiff.parsers import CodeParser
 from codiff.resolvers import resolve_internal_calls
+from codiff.utils.files import is_venv_dir
 from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
 
 logger = logging.getLogger(__name__)
@@ -142,19 +142,7 @@ def setup_repository(repo_path: str) -> str:
     logger.info("Setting up repository: %s", repo_name)
     logger.info("Database: %s", db_path)
 
-    # Create sync engine + tables
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
-
-    # Enable WAL mode
-    from sqlalchemy import event
-
-    @event.listens_for(engine, "connect")
-    def set_sqlite_pragma(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.close()
-
+    engine = make_sync_engine(db_path)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     db = Session()

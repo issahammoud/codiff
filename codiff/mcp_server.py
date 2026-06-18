@@ -93,9 +93,10 @@ def codiff_diff(
     """Render the structural call-graph diff directly to the user's terminal."""
     import os
 
+    from codiff.db import get_db_path
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
-    from codiff.diff.indexer import db_path_for, ensure_indexed
+    from codiff.diff.indexer import ensure_indexed
     from codiff.diff.render import render
     from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
 
@@ -105,7 +106,7 @@ def codiff_diff(
         head = build_from_ref(repo_path, head_ref)
     else:
         ensure_indexed(repo_path, base_ref)
-        db = db_path_for(repo_path)
+        db = get_db_path(repo_path)
         base = load_from_db(db)
         head = build_from_path(repo_path)
     graph_diff = diff_snapshots(base, head)

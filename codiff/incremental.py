@@ -1,7 +1,6 @@
 """Incremental index updater: re-parses changed .py files and updates the DB."""
 
 import asyncio
-import hashlib
 import logging
 import os
 import uuid
@@ -12,8 +11,9 @@ from sqlalchemy import Text, cast, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codiff.db import Class, FileState, Function, get_session_maker
-from codiff.parsers import CodeParser, is_venv_dir
+from codiff.parsers import CodeParser
 from codiff.resolvers import resolve_internal_calls
+from codiff.utils.files import hash_file, is_venv_dir
 from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
 
 logger = logging.getLogger(__name__)
@@ -22,15 +22,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _hash_file(path: str) -> str:
-    """Return SHA-256 hex digest of a file's contents."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _parse_and_resolve(repo_path: str, abs_file_path: str) -> tuple:
@@ -108,7 +99,7 @@ async def process_changed_file(
 
     # 1. Hash check — skip if file content is unchanged
     try:
-        content_hash = _hash_file(abs_file_path)
+        content_hash = hash_file(abs_file_path)
     except OSError:
         logger.warning("Cannot read %s, skipping", rel_path)
         return
@@ -371,7 +362,7 @@ async def _initialize_file_states(
                 abs_path = os.path.join(root, file)
                 rel_path = os.path.relpath(abs_path, repo_path)
                 try:
-                    h = _hash_file(abs_path)
+                    h = hash_file(abs_path)
                 except OSError:
                     continue
                 session.add(
@@ -436,7 +427,7 @@ async def startup_catchup(repo_id: str, repo_path: str) -> None:
             rel_path = os.path.relpath(abs_path, repo_path)
             current_rel.add(rel_path)
             try:
-                h = _hash_file(abs_path)
+                h = hash_file(abs_path)
             except OSError:
                 continue
             if rel_path not in known or known[rel_path] != h:

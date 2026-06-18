@@ -5,20 +5,11 @@ Python-specific query definitions, AST node handling, call extraction, import
 resolution, and docstring parsing.
 """
 
-import os
-
 import tree_sitter_python as tspython
 from tree_sitter import Language, Query
 
 from codiff.parsers.language_parser import LanguageParser
 from codiff.schema.parsing import ClassChunk, FunctionChunk, Parameter
-
-
-def is_venv_dir(root: str, d: str) -> bool:
-    """Return True if *d* is a Python virtual environment or egg-info directory."""
-    if d.endswith(".egg-info"):
-        return True
-    return os.path.exists(os.path.join(root, d, "pyvenv.cfg"))
 
 
 class PythonParser(LanguageParser):

@@ -7,25 +7,12 @@ import os
 from watchfiles import Change, awatch
 
 from codiff.incremental import process_changes
+from codiff.utils.files import is_path_in_venv
 from codiff.utils.gitignore_utils import is_file_ignored, load_gitignore
 
 logger = logging.getLogger(__name__)
 
 DEBOUNCE_SECONDS = 2.5
-
-
-def _is_in_venv(abs_path: str, repo_path: str) -> bool:
-    """Return True if abs_path lives inside a virtual environment under repo_path."""
-    try:
-        rel = os.path.relpath(abs_path, repo_path)
-    except ValueError:
-        return False
-    current = repo_path
-    for part in rel.split(os.sep)[:-1]:  # walk each parent dir, skip the filename
-        current = os.path.join(current, part)
-        if os.path.exists(os.path.join(current, "pyvenv.cfg")):
-            return True
-    return False
 
 
 async def watch_repo(repo_path: str, repo_id: str, indexing_lock: asyncio.Lock) -> None:
@@ -81,7 +68,7 @@ async def watch_repo(repo_path: str, repo_id: str, indexing_lock: asyncio.Lock) 
 
                 if (
                     path.endswith(".py")
-                    and not _is_in_venv(path, repo_path)
+                    and not is_path_in_venv(path, repo_path)
                     and not is_file_ignored(gitignore_spec, repo_path, path)
                 ):
                     pending[path] = "deleted" if change_type == Change.deleted else "changed"

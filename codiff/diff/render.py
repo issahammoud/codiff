@@ -29,6 +29,7 @@ from codiff.schema.diff import (
     ModifiedFunctionInfo,
     RemovedFunctionInfo,
 )
+from codiff.utils.terminal import detect_width
 
 console = Console(force_terminal=True)
 
@@ -142,10 +143,25 @@ def _name(function_id: str) -> str:
 
 
 def _display_name(fn: object) -> str:
-    """ClassName.method_name when the function belongs to a class, else just the name."""
+    """ClassName.method for class methods, outer.inner for nested functions, else just name."""
     class_name = getattr(fn, "class_name", None)
-    bare = _name(getattr(fn, "function_id", ""))
-    return f"{class_name}.{bare}" if class_name else bare
+    function_id = getattr(fn, "function_id", "")
+    name = function_id.split(".")[-1]
+
+    if class_name:
+        return f"{class_name}.{name}"
+
+    # Detect nested: strip the module prefix (derived from file_path) and check
+    # if what remains is "outer.inner" rather than a bare function name.
+    file_path = getattr(fn, "file_path", "")
+    module = file_path.replace("/", ".").replace(".py", "")
+    if function_id.startswith(module + "."):
+        remaining = function_id[len(module) + 1 :]  # e.g. "build_from_path.walk"
+        parts = remaining.split(".")
+        if len(parts) > 1:
+            return ".".join(parts[-2:])
+
+    return name
 
 
 def _fn_label(fid: str, *, is_new: bool, color_map: dict[str, str]) -> str:
@@ -323,6 +339,7 @@ def render(
     include_tests: bool = False,
 ) -> None:
     """Print the full structural diff report."""
+    term_w = detect_width()
     console.print()
     console.rule(
         f"[bold cyan]codiff[/bold cyan]  [dim]{base_ref}[/dim] [dim]→[/dim] {head_ref}",
@@ -348,9 +365,9 @@ def render(
 
     color_map = _build_color_map(result)
 
-    _render_group("Source", src_added, src_modified, src_removed, color_map)
+    _render_group("Source", src_added, src_modified, src_removed, color_map, term_w)
     if include_tests:
-        _render_group("Tests", tst_added, tst_modified, tst_removed, color_map)
+        _render_group("Tests", tst_added, tst_modified, tst_removed, color_map, term_w)
     console.print()
 
 
@@ -360,13 +377,14 @@ def _render_group(
     modified: list[ModifiedFunctionInfo],
     removed: list[RemovedFunctionInfo],
     color_map: dict[str, str],
+    term_w: int,
 ) -> None:
     if not added and not modified and not removed:
         return
     console.print()
     console.rule(f"[bold]{title}[/bold]", style="dim blue")
     console.print()
-    _render_uml(added, modified, removed, color_map)
+    _render_uml(added, modified, removed, color_map, term_w)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +397,7 @@ def _render_uml(
     modified: list[ModifiedFunctionInfo],
     removed: list[RemovedFunctionInfo],
     color_map: dict[str, str],
+    term_w: int,
 ) -> None:
     """Render file boxes side-by-side with arrows for cross-file relationships."""
     # Group changes by file
@@ -441,7 +460,6 @@ def _render_uml(
 
     # Greedy row packing — fit as many panels per row as the terminal allows.
     # Arrows show automatically when two adjacent same-row panels are connected.
-    term_w = console.size.width
     _ARROW_W = 14
 
     rows: list[list[str]] = []

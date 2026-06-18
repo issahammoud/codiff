@@ -1,34 +1,17 @@
-"""SQLite database layer — ORM models shared by sync (indexer) and async (watcher) paths."""
-
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, event
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
-# ---------------------------------------------------------------------------
-# Base
-# ---------------------------------------------------------------------------
 
 
 class Base(DeclarativeBase):
     pass
 
 
-# ---------------------------------------------------------------------------
-# Helper: store UUIDs as text in SQLite
-# ---------------------------------------------------------------------------
-
-
 def _new_uuid() -> str:
     return str(uuid.uuid4())
-
-
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
 
 
 class Repository(Base):
@@ -135,49 +118,3 @@ class CommitMeta(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
     indexed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-
-# ---------------------------------------------------------------------------
-# Engine / session helpers
-# ---------------------------------------------------------------------------
-
-_engine = None
-_session_maker = None
-
-
-def get_db_path(repo_path: str) -> str:
-    """Return the SQLite database path for a given repo path."""
-    import os
-
-    return os.path.join(repo_path, ".codiff.db")
-
-
-async def init_db(db_path: str):
-    """Create engine, session maker, and tables."""
-    global _engine, _session_maker
-    _engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", echo=False)
-    _session_maker = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
-
-    # Enable WAL mode for better concurrency
-    @event.listens_for(_engine.sync_engine, "connect")
-    def set_sqlite_pragma(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.close()
-
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-def get_session_maker() -> async_sessionmaker:
-    if _session_maker is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    return _session_maker
-
-
-def get_sync_db_path(repo_path: str) -> str:
-    """Return the SQLite database path (for sync usage in setup)."""
-    import os
-
-    return os.path.join(repo_path, ".codiff.db")

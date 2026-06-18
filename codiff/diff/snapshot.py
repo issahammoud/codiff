@@ -86,9 +86,10 @@ def build_from_path(repo_path: str) -> GraphSnapshot:
     Nothing is written to disk. Uses the same parsers + resolvers pipeline
     as the indexer, but discards results after building the snapshot.
     """
-    from codiff.parsers import CodeParser, is_venv_dir
+    from codiff.parsers import CodeParser
     from codiff.resolvers import resolve_internal_calls
     from codiff.setup import build_modules_dict, build_package_exports
+    from codiff.utils.files import is_venv_dir
     from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
 
     parser = CodeParser()
