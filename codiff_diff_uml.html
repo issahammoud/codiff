@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>codiff — structural diff</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 24px;
+    background: #181825;
+    border-bottom: 1px solid #313244;
+    flex-shrink: 0;
+  }
+  .logo { font-weight: 700; font-size: 14px; color: #89b4fa; }
+  .ref  { font-size: 12px; color: #6c7086; font-family: monospace; }
+  .ref b { color: #cdd6f4; font-weight: normal; }
+
+  .legend {
+    margin-left: auto;
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    color: #9399b2;
+  }
+  .leg { display: flex; align-items: center; gap: 5px; }
+  .leg-dot { font-weight: 700; font-size: 13px; }
+  .leg-dot.a { color: #a6e3a1; }
+  .leg-dot.m { color: #f9e2af; }
+  .leg-dot.r { color: #f38ba8; }
+
+  /* ── Canvas area ── */
+  .canvas {
+    flex: 1;
+    position: relative;
+    padding: 40px;
+    display: flex;
+    align-items: flex-start;
+    gap: 100px;
+    overflow: auto;
+  }
+
+  /* ── UML Box ── */
+  .uml-box {
+    border: 1px solid #313244;
+    border-radius: 8px;
+    overflow: hidden;
+    min-width: 220px;
+    background: #181825;
+    position: relative;
+    z-index: 1;
+    cursor: default;
+  }
+
+  .uml-header {
+    padding: 8px 14px 6px;
+    background: #11111b;
+    border-bottom: 1px solid #313244;
+  }
+  .uml-stereotype {
+    font-size: 10px;
+    color: #6c7086;
+    letter-spacing: 0.3px;
+    margin-bottom: 2px;
+  }
+  .uml-filename {
+    font-size: 12px;
+    font-family: monospace;
+    color: #89b4fa;
+    white-space: nowrap;
+  }
+
+  .uml-functions {
+    padding: 6px 0;
+  }
+
+  .fn-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 14px;
+    font-family: monospace;
+    font-size: 12px;
+    color: #bac2de;
+    cursor: pointer;
+    transition: background 0.1s;
+    border-left: 2px solid transparent;
+  }
+  .fn-row:hover { background: #1e1e2e; }
+  .fn-row.selected { background: #1e1e2e; border-left-color: #89b4fa; }
+
+  .fn-indicator {
+    font-weight: 700;
+    font-size: 13px;
+    width: 12px;
+    flex-shrink: 0;
+  }
+  .fn-indicator.a { color: #a6e3a1; }
+  .fn-indicator.m { color: #f9e2af; }
+  .fn-indicator.r { color: #f38ba8; }
+
+  .fn-name { flex: 1; }
+  .fn-name.a { color: #a6e3a1; }
+  .fn-name.m { color: #f9e2af; }
+  .fn-name.r { color: #f38ba8; }
+
+  /* ── SVG arrows ── */
+  .arrow-layer {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Detail drawer (bottom) ── */
+  #drawer {
+    background: #11111b;
+    border-top: 1px solid #313244;
+    padding: 14px 24px;
+    font-size: 12px;
+    min-height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-shrink: 0;
+    transition: all 0.15s;
+  }
+
+  .drawer-empty { color: #45475a; font-size: 12px; }
+
+  .drawer-name {
+    font-family: monospace;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .drawer-name.a { color: #a6e3a1; }
+  .drawer-name.m { color: #f9e2af; }
+  .drawer-name.r { color: #f38ba8; }
+
+  .drawer-section { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+  .drawer-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #585b70;
+    white-space: nowrap;
+  }
+  .drawer-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+  .chip {
+    font-family: monospace;
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .chip-new      { background: #1e3a2f; color: #a6e3a1; }
+  .chip-existing { background: #2a2a35; color: #9399b2; }
+  .chip-removed  { background: #3a1a1e; color: #f38ba8; text-decoration: line-through; }
+  .chip-info     { background: #2a2a35; color: #89b4fa; }
+
+  .drawer-divider { color: #313244; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">codiff</span>
+  <span class="ref"><b>HEAD</b> → working tree</span>
+  <div class="legend">
+    <div class="leg"><span class="leg-dot a">+</span> Added</div>
+    <div class="leg"><span class="leg-dot m">~</span> Modified</div>
+    <div class="leg"><span class="leg-dot r">-</span> Removed</div>
+  </div>
+</header>
+
+<div class="canvas" id="canvas">
+  <svg class="arrow-layer" id="arrows"></svg>
+
+  <!-- cli.py -->
+  <div class="uml-box" id="box-cli">
+    <div class="uml-header">
+      <div class="uml-stereotype">modified</div>
+      <div class="uml-filename">codiff/cli.py</div>
+    </div>
+    <div class="uml-functions">
+      <div class="fn-row" onclick="select(this)" data-type="m" data-name="_run_diff"
+           data-sig-changed="true"
+           data-calls-removed='["render"]'
+           data-calls-added='["render_tree"]'>
+        <span class="fn-indicator m">~</span>
+        <span class="fn-name m">_run_diff</span>
+      </div>
+      <div class="fn-row" onclick="select(this)" data-type="m" data-name="main"
+           data-body-changed="true">
+        <span class="fn-indicator m">~</span>
+        <span class="fn-name m">main</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- render.py -->
+  <div class="uml-box" id="box-render">
+    <div class="uml-header">
+      <div class="uml-stereotype">modified</div>
+      <div class="uml-filename">codiff/diff/render.py</div>
+    </div>
+    <div class="uml-functions">
+      <div class="fn-row" onclick="select(this)" data-type="a" data-name="render_tree"
+           data-entry="true"
+           data-calls-new='["_render_tree_group"]'
+           data-calls-existing='["_build_color_map","_partition","_render_summary"]'>
+        <span class="fn-indicator a">+</span>
+        <span class="fn-name a">render_tree</span>
+      </div>
+      <div class="fn-row" onclick="select(this)" data-type="a" data-name="_render_tree_group"
+           data-callers='["render_tree"]'
+           data-calls-new='["_render_added_trees","_render_modified_trees","_render_removed_trees"]'>
+        <span class="fn-indicator a">+</span>
+        <span class="fn-name a">_render_tree_group</span>
+      </div>
+      <div class="fn-row" onclick="select(this)" data-type="a" data-name="_render_added_trees"
+           data-callers='["_render_tree_group"]'
+           data-calls-new='["build_subtree"]'
+           data-calls-existing='["_group_key","_order_group"]'>
+        <span class="fn-indicator a">+</span>
+        <span class="fn-name a">_render_added_trees</span>
+      </div>
+      <div class="fn-row" onclick="select(this)" data-type="a" data-name="_render_modified_trees"
+           data-callers='["_render_tree_group"]'
+           data-calls-existing='["_fmt_sig","_fn_label","_group_key","_name"]'>
+        <span class="fn-indicator a">+</span>
+        <span class="fn-name a">_render_modified_trees</span>
+      </div>
+      <div class="fn-row" onclick="select(this)" data-type="a" data-name="_render_removed_trees"
+           data-callers='["_render_tree_group"]'
+           data-calls-existing='["_group_key","_name"]'>
+        <span class="fn-indicator a">+</span>
+        <span class="fn-name a">_render_removed_trees</span>
+      </div>
+      <div class="fn-row" onclick="select(this)" data-type="a" data-name="build_subtree"
+           data-callers='["_render_added_trees"]'
+           data-calls-existing='["_fn_label","_name"]'>
+        <span class="fn-indicator a">+</span>
+        <span class="fn-name a">build_subtree</span>
+      </div>
+      <div class="fn-row" onclick="select(this)" data-type="a" data-name="_fn_tree_label"
+           data-entry="true"
+           data-calls-existing='["_fn_label"]'>
+        <span class="fn-indicator a">+</span>
+        <span class="fn-name a">_fn_tree_label</span>
+      </div>
+      <div class="fn-row" onclick="select(this)" data-type="m" data-name="_fmt_sig"
+           data-body-changed="true">
+        <span class="fn-indicator m">~</span>
+        <span class="fn-name m">_fmt_sig</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="drawer">
+  <span class="drawer-empty">Click a function to see details</span>
+</div>
+
+<script>
+let selected = null;
+
+function select(el) {
+  if (selected) selected.classList.remove('selected');
+  selected = el;
+  el.classList.add('selected');
+  updateDrawer(el);
+}
+
+function chips(arr, cls) {
+  if (!arr || !arr.length) return '';
+  return arr.map(n => `<span class="chip ${cls}">${n}</span>`).join('');
+}
+
+function section(label, content) {
+  if (!content) return '';
+  return `<div class="drawer-section"><span class="drawer-label">${label}</span><div class="drawer-chips">${content}</div></div>`;
+}
+
+function updateDrawer(el) {
+  const d = el.dataset;
+  const type = d.type;
+  const name = d.name;
+
+  let parts = [];
+
+  const nameEl = `<span class="drawer-name ${type}">${name}</span>`;
+  parts.push(nameEl);
+
+  if (d.entry === 'true') parts.push(section('', `<span class="chip chip-info">⬡ entry point</span>`));
+  if (d.sigChanged === 'true' || el.dataset['sigChanged'] === 'true') parts.push(section('Signature', '<span class="chip chip-info">changed</span>'));
+  if (d.bodyChanged === 'true' || el.dataset['bodyChanged'] === 'true') parts.push(section('', '<span class="chip chip-info">body changed</span>'));
+
+  const callers = tryParse(d.callers);
+  if (callers) parts.push(section('← called by', chips(callers, 'chip-new')));
+
+  const callsNew = tryParse(d.callsNew || d['calls-new']);
+  if (callsNew) parts.push(section('→ calls (new)', chips(callsNew, 'chip-new')));
+
+  const callsAdded = tryParse(d.callsAdded || d['calls-added']);
+  if (callsAdded) parts.push(section('→ calls (new)', chips(callsAdded, 'chip-new')));
+
+  const callsExisting = tryParse(d.callsExisting || d['calls-existing']);
+  if (callsExisting) parts.push(section('→ calls (existing)', chips(callsExisting, 'chip-existing')));
+
+  const callsRemoved = tryParse(d.callsRemoved || d['calls-removed']);
+  if (callsRemoved) parts.push(section('→ calls removed', chips(callsRemoved, 'chip-removed')));
+
+  document.getElementById('drawer').innerHTML = parts.join('<span class="drawer-divider">│</span>');
+}
+
+function tryParse(val) {
+  if (!val) return null;
+  try {
+    const arr = JSON.parse(val);
+    return arr && arr.length ? arr : null;
+  } catch { return null; }
+}
+
+// ── Draw arrow between cli box and render box ─────────────────────────────
+
+function drawArrows() {
+  const canvas = document.getElementById('canvas');
+  const svg = document.getElementById('arrows');
+  const cr = canvas.getBoundingClientRect();
+
+  const cli = document.getElementById('box-cli').getBoundingClientRect();
+  const render = document.getElementById('box-render').getBoundingClientRect();
+
+  const x1 = cli.right - cr.left + canvas.scrollLeft;
+  const y1 = cli.top - cr.top + canvas.scrollTop + cli.height / 2;
+  const x2 = render.left - cr.left + canvas.scrollLeft;
+  const y2 = render.top - cr.top + canvas.scrollTop + 28; // align with render_tree row
+
+  const cx1 = x1 + (x2 - x1) * 0.5;
+  const cx2 = x2 - (x2 - x1) * 0.1;
+
+  svg.setAttribute('width', canvas.scrollWidth);
+  svg.setAttribute('height', canvas.scrollHeight);
+
+  svg.innerHTML = `
+    <defs>
+      <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#a6e3a1" opacity="0.8"/>
+      </marker>
+    </defs>
+    <path
+      d="M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}"
+      fill="none" stroke="#a6e3a1" stroke-width="1.5"
+      stroke-opacity="0.6" stroke-dasharray="5,3"
+      marker-end="url(#arrowhead)"
+    />
+    <text x="${(x1+x2)/2}" y="${Math.min(y1,y2) - 8}"
+      fill="#a6e3a1" font-size="10" font-family="monospace"
+      text-anchor="middle" opacity="0.7">calls render_tree</text>
+  `;
+}
+
+window.addEventListener('load', () => setTimeout(drawArrows, 50));
+window.addEventListener('resize', drawArrows);
+</script>
+</body>
+</html>

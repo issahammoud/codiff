@@ -19,7 +19,9 @@ from typing import Any, Callable, Optional
 
 from rich.box import Box
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from codiff.diff.analysis import (
     AddedFunctionInfo,
@@ -66,15 +68,17 @@ _CHAIN_COLORS = [
 
 
 def _build_color_map(result: AnalysisResult) -> dict[str, str]:
-    """Assign a color to each connected component of >= 2 new functions.
+    """Assign a chain color to every function that belongs to a connected call chain.
 
-    Components are identified via undirected BFS over mutual call edges among
-    added functions. Single-node components (isolated additions) are not
-    assigned a color — they fall back to plain white in the render.
+    The graph includes both added and modified functions so that a modified
+    function calling an added function shares the same color across modules.
+    Single-node components get no color (white for added, yellow for modified).
     """
-    added_ids = {fn.function_id for fn in result.added}
+    all_ids = {fn.function_id for fn in result.added} | {fn.function_id for fn in result.modified}
 
     adj: dict[str, set[str]] = defaultdict(set)
+
+    # Added functions: full adjacency via new_calls / new_callers
     for fn in result.added:
         for callee in fn.new_calls:
             adj[fn.function_id].add(callee)
@@ -83,9 +87,15 @@ def _build_color_map(result: AnalysisResult) -> dict[str, str]:
             adj[fn.function_id].add(caller)
             adj[caller].add(fn.function_id)
 
+    # Modified functions: connect to added functions they now call
+    for mod_fn in result.modified:
+        for callee_id in mod_fn.calls_added_new:
+            adj[mod_fn.function_id].add(callee_id)
+            adj[callee_id].add(mod_fn.function_id)
+
     visited: set[str] = set()
     components: list[list[str]] = []
-    for fid in sorted(added_ids):
+    for fid in sorted(all_ids):
         if fid in visited:
             continue
         component: list[str] = []
@@ -97,7 +107,7 @@ def _build_color_map(result: AnalysisResult) -> dict[str, str]:
             visited.add(node)
             component.append(node)
             for neighbor in sorted(adj.get(node, set())):
-                if neighbor not in visited:
+                if neighbor in all_ids and neighbor not in visited:
                     queue.append(neighbor)
         components.append(component)
 
@@ -129,6 +139,13 @@ def _lbl(function_id: str) -> str:
 def _name(function_id: str) -> str:
     """Compact label: just the bare function name (last dotted segment)."""
     return function_id.split(".")[-1]
+
+
+def _display_name(fn: object) -> str:
+    """ClassName.method_name when the function belongs to a class, else just the name."""
+    class_name = getattr(fn, "class_name", None)
+    bare = _name(getattr(fn, "function_id", ""))
+    return f"{class_name}.{bare}" if class_name else bare
 
 
 def _fn_label(fid: str, *, is_new: bool, color_map: dict[str, str]) -> str:
@@ -163,7 +180,7 @@ def _truncate(items: list[str], max_items: int) -> tuple[list[str], int]:
 def _fmt_sig(params: list[dict], return_type: Optional[str]) -> str:
     parts: list[str] = []
     for p in params:
-        part = p.get("name", "?")
+        part = p.get("name") or "?"
         if p.get("type"):
             part += f": {p['type']}"
         if p.get("value") is not None:
@@ -194,27 +211,27 @@ def _group_key(fn: object) -> tuple[str, str]:
     return (fn.file_path, fn.class_name or "")  # type: ignore[attr-defined]
 
 
-def _order_group(fns: list[AddedFunctionInfo]) -> list[AddedFunctionInfo]:
+def _order_group(
+    fns: list[AddedFunctionInfo],
+    color_map: dict[str, str] | None = None,
+) -> list[AddedFunctionInfo]:
     """Order functions within a (file, class) group for readability.
 
     Entry points (nothing calls them within the group) come first.
-    BFS then follows new_calls within the group so callee rows flow
-    directly after their caller. Unreached functions are appended last.
+    DFS follows new_calls within the group so callee rows flow directly
+    after their caller — but only across same-color connections, so chains
+    stay visually consistent with the color coding.
     """
     if len(fns) <= 1:
         return fns
 
     by_id = {fn.function_id: fn for fn in fns}
     g_ids = set(by_id)
+    cm = color_map or {}
 
-    # Local starts: true entry points first, then functions whose callers
-    # are all outside this group (so they're locally uncalled).
     starts = [fn for fn in fns if fn.is_entry_point or not (set(fn.new_callers) & g_ids)]
     starts.sort(key=lambda fn: (0 if fn.is_entry_point else 1, _name(fn.function_id)))
 
-    # DFS so each chain stays contiguous (BFS would interleave them).
-    # Children are pushed in reverse sorted order so the first callee
-    # is processed next, maintaining alphabetical order within siblings.
     ordered: list[AddedFunctionInfo] = []
     visited: set[str] = set()
     for start in starts:
@@ -225,11 +242,15 @@ def _order_group(fns: list[AddedFunctionInfo]) -> list[AddedFunctionInfo]:
                 continue
             visited.add(fid)
             ordered.append(by_id[fid])
+            my_color = cm.get(fid)
             for callee_id in reversed(sorted(by_id[fid].new_calls)):
-                if callee_id in g_ids and callee_id not in visited:
+                if callee_id not in g_ids or callee_id in visited:
+                    continue
+                # Only follow same-color edges so chains stay contiguous
+                if my_color is not None and cm.get(callee_id) == my_color:
                     stack.append(callee_id)
 
-    # Safety: append anything not reached (e.g. cycles)
+    # Append anything not yet reached (cross-chain callees, isolated nodes)
     for fn in sorted(fns, key=lambda fn: _name(fn.function_id)):
         if fn.function_id not in visited:
             ordered.append(fn)
@@ -344,22 +365,338 @@ def _render_group(
         return
     console.print()
     console.rule(f"[bold]{title}[/bold]", style="dim blue")
-
-    if added:
-        console.print("\n [dim]Added[/dim]")
-        console.print(_added_table(added, color_map))
-
-    if modified:
-        console.print("\n [dim]Modified[/dim]")
-        console.print(_modified_table(modified, color_map))
-
-    if removed:
-        console.print("\n [dim]Removed[/dim]")
-        console.print(_removed_table(removed))
+    console.print()
+    _render_uml(added, modified, removed, color_map)
 
 
 # ---------------------------------------------------------------------------
-# Table builders
+# UML layout
+# ---------------------------------------------------------------------------
+
+
+def _render_uml(
+    added: list[AddedFunctionInfo],
+    modified: list[ModifiedFunctionInfo],
+    removed: list[RemovedFunctionInfo],
+    color_map: dict[str, str],
+) -> None:
+    """Render file boxes side-by-side with arrows for cross-file relationships."""
+    # Group changes by file
+    files: dict[str, dict] = {}
+    for a_fn in added:
+        files.setdefault(a_fn.file_path, {"added": [], "modified": [], "removed": []})
+        files[a_fn.file_path]["added"].append(a_fn)
+    for m_fn in modified:
+        files.setdefault(m_fn.file_path, {"added": [], "modified": [], "removed": []})
+        files[m_fn.file_path]["modified"].append(m_fn)
+    for r_fn in removed:
+        files.setdefault(r_fn.file_path, {"added": [], "modified": [], "removed": []})
+        files[r_fn.file_path]["removed"].append(r_fn)
+
+    # Map function_id → file_path for changed functions only
+    fn_to_file: dict[str, str] = {}
+    for a_fn in added:
+        fn_to_file[a_fn.function_id] = a_fn.file_path
+    for m_fn in modified:
+        fn_to_file[m_fn.function_id] = m_fn.file_path
+    for r_fn in removed:
+        fn_to_file[r_fn.function_id] = r_fn.file_path
+
+    # Detect cross-file call relationships between changed files.
+    # (from_file, to_file) → list of callee function_ids (used for chain color)
+    cross: dict[tuple[str, str], list[str]] = defaultdict(list)
+
+    for a_fn in added:
+        for caller_id in a_fn.existing_callers + a_fn.new_callers:
+            caller_file = fn_to_file.get(caller_id)
+            if caller_file and caller_file != a_fn.file_path:
+                cross[(caller_file, a_fn.file_path)].append(a_fn.function_id)
+
+    for m_fn in modified:
+        for callee_id in m_fn.calls_added_new + m_fn.calls_added_existing:
+            callee_file = fn_to_file.get(callee_id)
+            if callee_file and callee_file != m_fn.file_path:
+                cross[(m_fn.file_path, callee_file)].append(callee_id)
+
+    # Sort files: upstream (more outgoing) first, downstream last
+    out_count: dict[str, int] = defaultdict(int)
+    in_count: dict[str, int] = defaultdict(int)
+    for from_f, to_f in cross:
+        out_count[from_f] += 1
+        in_count[to_f] += 1
+    # Sort files so connected pairs are adjacent, maximising chance of arrows.
+    placed: set[str] = set()
+    all_fps: list[str] = []
+    for from_fp, to_fp in sorted(cross):
+        for fp in (from_fp, to_fp):
+            if fp in files and fp not in placed:
+                all_fps.append(fp)
+                placed.add(fp)
+    for fp in sorted(files):
+        if fp not in placed:
+            all_fps.append(fp)
+
+    panels = {fp: _build_file_panel(fp, files[fp], color_map) for fp in all_fps}
+    widths = {fp: _panel_min_width(fp, files[fp], color_map) for fp in all_fps}
+
+    # Greedy row packing — fit as many panels per row as the terminal allows.
+    # Arrows show automatically when two adjacent same-row panels are connected.
+    term_w = console.size.width
+    _ARROW_W = 14
+
+    rows: list[list[str]] = []
+    current_row: list[str] = []
+    current_w = 0
+    for fp in all_fps:
+        slot_w = widths[fp] + 4 + (_ARROW_W if current_row else 0)
+        if current_row and current_w + slot_w > term_w:
+            rows.append(current_row)
+            current_row = [fp]
+            current_w = widths[fp] + 4
+        else:
+            current_row.append(fp)
+            current_w += slot_w
+    if current_row:
+        rows.append(current_row)
+
+    for row_fps in rows:
+        grid = Table.grid(padding=(0, 2))
+        for i, fp in enumerate(row_fps):
+            grid.add_column(vertical="top", min_width=widths[fp])
+            if i < len(row_fps) - 1:
+                grid.add_column(vertical="top", width=10)
+        row_cells: list = []
+        for i, fp in enumerate(row_fps):
+            row_cells.append(panels[fp])
+            if i < len(row_fps) - 1:
+                next_fp = row_fps[i + 1]
+                fwd = cross.get((fp, next_fp), [])
+                rev = cross.get((next_fp, fp), [])
+                callee_ids = fwd + rev
+                row_cells.append(
+                    _arrow_cell(callee_ids, color_map, reverse=bool(rev and not fwd))
+                    if callee_ids
+                    else Text("")
+                )
+        grid.add_row(*row_cells)
+        console.print(grid)
+
+
+def _panel_min_width(file_path: str, funcs: dict, color_map: dict[str, str]) -> int:
+    """Minimum panel width: widest row (indicator + indent + name + annotation) + borders."""
+    depth: dict[str, int] = {}
+    added_sorted: list[AddedFunctionInfo] = []
+    fn_by_grp: dict[tuple[str, str], list[AddedFunctionInfo]] = defaultdict(list)
+    for fn in funcs["added"]:
+        fn_by_grp[_group_key(fn)].append(fn)
+    for grp_key in _topo_order_groups(funcs["added"]):
+        added_sorted.extend(_order_group(fn_by_grp[grp_key], color_map))
+    for i, fn in enumerate(added_sorted):
+        my_color = color_map.get(fn.function_id)
+        parent_depth2: Optional[int] = None
+        for j in range(i - 1, -1, -1):
+            prev = added_sorted[j]
+            if (
+                prev.function_id in fn.new_callers
+                and my_color is not None
+                and color_map.get(prev.function_id) == my_color
+            ):
+                broken = any(
+                    depth[added_sorted[k].function_id] == 0
+                    and color_map.get(added_sorted[k].function_id) != my_color
+                    for k in range(j + 1, i)
+                )
+                if not broken:
+                    parent_depth2 = depth[prev.function_id]
+                break
+        depth[fn.function_id] = (parent_depth2 + 1) if parent_depth2 is not None else 0
+
+    rows = []
+    for fn in added_sorted:
+        d = depth[fn.function_id]
+        indent = "  " * d + ("→ " if d > 0 else "+ ")
+        label = indent + _display_name(fn)
+        if fn.is_entry_point:
+            label += "  entry point"
+        rows.append(len(label))
+    for fn in funcs["modified"]:
+        label = f"~ {_display_name(fn)}"
+        if fn.signature_changed:
+            label += "  sig changed"
+        elif not fn.calls_added_new and not fn.calls_added_existing and not fn.calls_removed:
+            label += "  body changed"
+        rows.append(len(label))
+    for fn in funcs["removed"]:
+        rows.append(len(f"- {_display_name(fn)}"))
+    rows.append(len(file_path))
+    # +4 for panel border (2) + padding (2)
+    return max(rows, default=20) + 4
+
+
+def _topo_order_groups(
+    added_fns: list[AddedFunctionInfo],
+) -> list[tuple[str, str]]:
+    """Return (file, class) groups in topological call order.
+
+    Groups are sorted so that if class A calls any new function in class B,
+    A comes before B. This keeps same-chain functions adjacent in the panel.
+    Cycles (rare) fall back to alphabetical order.
+    """
+    # Map function_id → its group key
+    fn_to_group: dict[str, tuple[str, str]] = {fn.function_id: _group_key(fn) for fn in added_fns}
+
+    # Collect groups preserving first-seen order
+    groups: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for fn in added_fns:
+        g = _group_key(fn)
+        if g not in seen:
+            groups.append(g)
+            seen.add(g)
+
+    # Build directed edges: group A → group B when fn in A calls fn in B
+    edges: dict[tuple[str, str], set[tuple[str, str]]] = {g: set() for g in groups}
+    for fn in added_fns:
+        my_g = _group_key(fn)
+        for callee_id in fn.new_calls:
+            callee_g = fn_to_group.get(callee_id)
+            if callee_g and callee_g != my_g and callee_g in seen:
+                edges[my_g].add(callee_g)
+
+    # Kahn's topological sort
+    in_deg: dict[tuple[str, str], int] = {g: 0 for g in groups}
+    for g, callees in edges.items():
+        for cg in callees:
+            in_deg[cg] += 1
+
+    queue = sorted([g for g in groups if in_deg[g] == 0], key=lambda g: g[1])
+    result: list[tuple[str, str]] = []
+    while queue:
+        g = queue.pop(0)
+        result.append(g)
+        for cg in sorted(edges[g], key=lambda g: g[1]):
+            in_deg[cg] -= 1
+            if in_deg[cg] == 0:
+                queue.append(cg)
+
+    # Cycles or isolated groups not yet placed — append alphabetically
+    placed = set(result)
+    result.extend(sorted((g for g in groups if g not in placed), key=lambda g: g[1]))
+    return result
+
+
+def _build_file_panel(
+    file_path: str,
+    funcs: dict,
+    color_map: dict[str, str],
+) -> Panel:
+    """Build a Rich Panel listing the changed functions in one file."""
+    content = Text()
+
+    # Added: entry points first, then rest in DFS order from _order_group
+    added_ordered: list[AddedFunctionInfo] = []
+    fn_by_group: dict[tuple[str, str], list[AddedFunctionInfo]] = defaultdict(list)
+    for fn in funcs["added"]:
+        fn_by_group[_group_key(fn)].append(fn)
+    for grp_key in _topo_order_groups(funcs["added"]):
+        added_ordered.extend(_order_group(fn_by_group[grp_key], color_map))
+
+    # Depth rule: use the most recent same-color caller in the list, BUT only
+    # if there is no "chain break" between that caller and the current function.
+    # A chain break is a depth-0 function of a DIFFERENT color appearing in
+    # between — it signals a new independent chain starting, so the current
+    # function must also start at depth 0.
+    # This lets siblings share the same depth as their parent's other children
+    # (e.g. _render_modified_trees appears at depth 2 after build_subtree at
+    # depth 3, correctly de-indented as a sibling), while still preventing
+    # isolated functions from creating false parent-child appearances.
+    depth: dict[str, int] = {}
+    for i, fn in enumerate(added_ordered):
+        my_color = color_map.get(fn.function_id)
+        parent_depth: Optional[int] = None
+        for j in range(i - 1, -1, -1):
+            prev = added_ordered[j]
+            if (
+                prev.function_id in fn.new_callers
+                and my_color is not None
+                and color_map.get(prev.function_id) == my_color
+            ):
+                # Check for a chain break between j and i
+                broken = any(
+                    depth[added_ordered[k].function_id] == 0
+                    and color_map.get(added_ordered[k].function_id) != my_color
+                    for k in range(j + 1, i)
+                )
+                if not broken:
+                    parent_depth = depth[prev.function_id]
+                break
+        depth[fn.function_id] = (parent_depth + 1) if parent_depth is not None else 0
+
+    first = True
+    for fn in added_ordered:
+        d = depth[fn.function_id]
+        # Blank line between independent chains (new entry point, not the first)
+        if not first:
+            content.append("\n\n" if d == 0 else "\n")
+        first = False
+        color = color_map.get(fn.function_id, "green")
+        if d == 0:
+            content.append("+ ", style="bold green")
+        else:
+            content.append("  " * d, style="")
+            content.append("→ ", style="dim green")
+        content.append(_display_name(fn), style=f"bold {color}")
+        if fn.is_entry_point:
+            content.append("  entry point", style="dim")
+
+    for fn in sorted(funcs["modified"], key=lambda f: _display_name(f)):
+        if not first:
+            content.append("\n")
+        first = False
+        content.append("~ ", style="bold yellow")
+        fn_color = color_map.get(fn.function_id, "yellow")
+        content.append(_display_name(fn), style=fn_color)
+        if fn.signature_changed:
+            content.append("  sig changed", style="dim")
+        elif not fn.calls_added_new and not fn.calls_added_existing and not fn.calls_removed:
+            content.append("  body changed", style="dim")
+
+    for fn in sorted(funcs["removed"], key=lambda f: _display_name(f)):
+        if not first:
+            content.append("\n")
+        first = False
+        content.append("- ", style="bold red")
+        content.append(_display_name(fn), style="red")
+
+    return Panel(
+        content,
+        title=f"[dim]{file_path}[/dim]",
+        border_style="grey50",
+        padding=(0, 1),
+        expand=False,
+    )
+
+
+def _arrow_cell(
+    callee_ids: list[str],
+    color_map: dict[str, str],
+    reverse: bool = False,
+) -> Text:
+    """Arrow between two connected panels, colored with the callee's chain color."""
+    # Use the chain color of the first recognized callee; fall back to dim green
+    color = "dim green"
+    for fid in callee_ids:
+        c = color_map.get(fid)
+        if c:
+            color = c
+            break
+    arrow = Text(justify="center")
+    arrow.append("◀────" if reverse else "────▶", style=color)
+    return arrow
+
+
+# ---------------------------------------------------------------------------
+# Table builders (kept for --table fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -368,7 +705,7 @@ def _added_table(functions: list[AddedFunctionInfo], color_map: dict[str, str]) 
     grouped = sorted(functions, key=_group_key)
     fns: list[AddedFunctionInfo] = []
     for _, grp in groupby(grouped, key=_group_key):
-        fns.extend(_order_group(list(grp)))
+        fns.extend(_order_group(list(grp), color_map))
     has_class = any(fn.class_name for fn in fns)
     cols: list[tuple[str, dict]] = [
         ("", {"width": 1, "style": "green bold"}),

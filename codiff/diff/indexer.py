@@ -151,8 +151,8 @@ def _write_snapshot(source_path: str, db_path: str, sha: str) -> None:
         class_docstrings: dict = {}
 
         for root, dirs, files in os.walk(source_path):
-            dirs[:] = [d for d in dirs if d not in parser.exclude_dirs]
-            for fname in files:
+            dirs[:] = sorted(d for d in dirs if d not in parser.exclude_dirs)
+            for fname in sorted(files):
                 if not fname.endswith(".py"):
                     continue
                 fpath = Path(root) / fname
