@@ -61,6 +61,12 @@ def main():
         help="Output a Mermaid flowchart diagram instead of the terminal render",
     )
     diff_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output structured JSON (for editor integrations such as the VSCode extension)",
+    )
+    diff_parser.add_argument(
         "--repo",
         default=".",
         metavar="PATH",
@@ -107,6 +113,7 @@ def main():
             head_ref=args.head,
             include_tests=args.include_tests,
             mermaid=args.mermaid,
+            as_json=args.json,
         )
 
     elif args.command == "init":
@@ -154,11 +161,13 @@ def _run_diff(
     head_ref: str | None = None,
     include_tests: bool = False,
     mermaid: bool = False,
+    as_json: bool = False,
 ) -> None:
     from codiff.db import get_db_path
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import ensure_indexed
+    from codiff.diff.json_output import render_json
     from codiff.diff.mermaid import render_mermaid
     from codiff.diff.render import render
     from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
@@ -181,7 +190,9 @@ def _run_diff(
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
 
-    if mermaid:
+    if as_json:
+        print(render_json(result, base_ref=base_ref, head_ref=head_ref or "working tree"))
+    elif mermaid:
         print(render_mermaid(result, include_tests=include_tests))
     else:
         render(
