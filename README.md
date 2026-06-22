@@ -23,12 +23,22 @@ pip install "codiff[mcp]"   # CLI + MCP server for coding agents
 ### CLI
 
 ```bash
-codiff diff                          # diff HEAD vs working tree
+codiff diff                          # diff HEAD vs working tree (terminal output)
+codiff diff --format mermaid         # output a Mermaid UML class diagram
+codiff diff --format json            # output structured JSON (for editor integrations)
 codiff diff --base main              # diff a specific base ref
 codiff diff --head <ref>             # diff two git refs directly
 codiff diff --repo /path/to/repo     # diff a different repo
 codiff diff --include-tests          # include test functions (hidden by default)
 ```
+
+### Output formats
+
+| Format | Description |
+|---|---|
+| `terminal` | Colored terminal output with call-chain boxes (default) |
+| `mermaid` | Mermaid `classDiagram` — paste into any Markdown file or PR description |
+| `json` | Structured JSON — consumed by editor integrations (e.g. the VS Code extension) |
 
 ### MCP integration (Claude Code)
 
@@ -42,7 +52,7 @@ This writes `.mcp.json` into the project root, registering the `codiff-mcp` serv
 
 The agent calls `codiff_diff` at the end of every response that modifies files. The full colored output renders directly in your terminal, identical to `codiff diff`.
 
-## Reading the output
+## Reading the terminal output
 
 The output shows one box per changed file. Boxes are laid out side by side when they fit the terminal width, with `────▶` arrows between adjacent connected boxes.
 
@@ -67,7 +77,7 @@ For added functions, `→` arrows show intra-file call relationships — a funct
 
 ### Colors
 
-Functions that form a connected call chain share a color across the entire output — across boxes, across files. All magenta names belong to one chain, all cyan to another. This is consistent for both added and modified functions.
+Functions that form a connected call chain share a color across the entire output — across boxes, across files. All magenta names belong to one chain, all cyan to another.
 
 - **Chain color** on the function name — part of a call chain
 - **White** on the function name — added/modified but not connected to any chain
