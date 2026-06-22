@@ -20,7 +20,6 @@ class Repository(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     url: Mapped[str] = mapped_column(String(512), nullable=False, default="")
-    community_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_parsed: Mapped[bool] = mapped_column(default=False)
     total_functions: Mapped[int] = mapped_column(Integer, default=0)
     total_classes: Mapped[int] = mapped_column(Integer, default=0)
@@ -94,20 +93,6 @@ class Class(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     repository: Mapped["Repository"] = relationship("Repository", back_populates="classes")
-
-
-class FileState(Base):
-    """Tracks per-file content hashes for incremental re-indexing."""
-
-    __tablename__ = "file_states"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    repository_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("repositories.id"), nullable=False
-    )
-    file_path: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
-    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 hex
-    last_indexed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class CommitMeta(Base):
