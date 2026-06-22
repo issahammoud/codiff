@@ -7,9 +7,11 @@ Two loaders:
 Both return a GraphSnapshot with the same structure so the differ can compare them.
 """
 
+import io
 import logging
-import os
-from pathlib import Path
+import subprocess
+import tarfile
+import tempfile
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -58,16 +60,7 @@ def load_from_db(db_path: str) -> GraphSnapshot:
 
 
 def build_from_ref(repo_path: str, ref: str) -> GraphSnapshot:
-    """Parse a git ref in memory and return a GraphSnapshot (no DB written).
-
-    Extracts the ref via git archive into a temp directory, runs the same
-    parse pipeline as build_from_path, then discards the temp directory.
-    """
-    import io
-    import subprocess
-    import tarfile
-    import tempfile
-
+    """Parse a git ref in memory and return a GraphSnapshot (no DB written)."""
     proc = subprocess.run(
         ["git", "archive", ref, "--format=tar"],
         cwd=repo_path,
@@ -81,61 +74,13 @@ def build_from_ref(repo_path: str, ref: str) -> GraphSnapshot:
 
 
 def build_from_path(repo_path: str) -> GraphSnapshot:
-    """Parse the working tree at *repo_path* in memory and return a GraphSnapshot.
+    """Parse the working tree at *repo_path* in memory and return a GraphSnapshot."""
+    from codiff.parsers import parse_repository
 
-    Nothing is written to disk. Uses the same parsers + resolvers pipeline
-    as the indexer, but discards results after building the snapshot.
-    """
-    from codiff.parsers import CodeParser
-    from codiff.resolvers import resolve_internal_calls
-    from codiff.setup import build_modules_dict, build_package_exports
-    from codiff.utils.files import is_venv_dir
-    from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
-
-    parser = CodeParser()
-    repo = Path(repo_path)
-    gitignore = load_gitignore(repo_path)
-
-    modules_dict = build_modules_dict(repo, parser, gitignore)
-    package_exports = build_package_exports(repo, parser, gitignore)
-
-    functions_list: list = []
-    classes_list: list = []
-    imports_dict: dict = {}
-
-    for root, dirs, files in os.walk(repo_path):
-        dirs[:] = sorted(
-            d
-            for d in dirs
-            if d not in parser.exclude_dirs
-            and not is_venv_dir(root, d)
-            and not is_dir_ignored(gitignore, str(repo), root, d)
-        )
-        for fname in sorted(files):
-            if not fname.endswith(".py"):
-                continue
-            fpath = Path(root) / fname
-            rel = str(fpath.relative_to(repo))
-            try:
-                src = fpath.read_text(encoding="utf-8", errors="ignore")
-                funcs, classes, imports, _ = parser.parse_code(src, rel, modules_dict)
-                functions_list.extend(funcs)
-                classes_list.extend(classes)
-                imports_dict.update(imports)
-            except Exception as exc:
-                logger.warning("Parse error %s: %s", rel, exc)
-
-    functions_list = resolve_internal_calls(
-        functions=functions_list,
-        classes=classes_list,
-        imports=imports_dict,
-        modules_dict=modules_dict,
-        package_exports=package_exports,
-        max_workers=4,
-    )
+    parsed = parse_repository(repo_path)
 
     snapshot = GraphSnapshot()
-    for chunk in functions_list:
+    for chunk in parsed.functions:
         snapshot.nodes[chunk.id] = NodeInfo(
             function_id=chunk.id,
             name=chunk.name,

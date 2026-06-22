@@ -15,14 +15,11 @@ import subprocess
 import tarfile
 import tempfile
 import uuid
-from pathlib import Path
 
 from sqlalchemy.orm import sessionmaker
 
 from codiff.db import Base, Class, CommitMeta, Function, Repository, get_db_path, make_sync_engine
-from codiff.parsers import CodeParser
-from codiff.resolvers import resolve_internal_calls
-from codiff.setup import build_modules_dict, build_package_exports
+from codiff.schema.parsing import ClassChunk, FunctionChunk
 
 logger = logging.getLogger(__name__)
 
@@ -100,14 +97,15 @@ def _full_index(repo_path: str, db_path: str, ref: str, sha: str) -> None:
 
 
 def _write_snapshot(source_path: str, db_path: str, sha: str) -> None:
-    """Parse *source_path* and write all functions/classes to *db_path*."""
+    """Parse *source_path* via parse_repository() and write results to *db_path*."""
+    from codiff.parsers import parse_repository
+
     engine = make_sync_engine(db_path)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     db = Session()
 
     try:
-        # Wipe previous snapshot
         db.query(Function).delete()
         db.query(Class).delete()
         db.query(CommitMeta).delete()
@@ -119,99 +117,60 @@ def _write_snapshot(source_path: str, db_path: str, sha: str) -> None:
         db.add(repo)
         db.commit()
 
-        parser = CodeParser()
-        source = Path(source_path)
-        modules_dict = build_modules_dict(source, parser)
-        package_exports = build_package_exports(source, parser)
+        parsed = parse_repository(source_path)
 
-        functions_list: list = []
-        classes_list: list = []
-        imports_dict: dict = {}
-        module_docstrings: dict = {}
-        class_docstrings: dict = {}
-
-        for root, dirs, files in os.walk(source_path):
-            dirs[:] = sorted(d for d in dirs if d not in parser.exclude_dirs)
-            for fname in sorted(files):
-                if not fname.endswith(".py"):
-                    continue
-                fpath = Path(root) / fname
-                rel = str(fpath.relative_to(source))
-                try:
-                    src = fpath.read_text(encoding="utf-8", errors="ignore")
-                    funcs, classes, imports, mod_doc = parser.parse_code(src, rel, modules_dict)
-                    if mod_doc:
-                        module_docstrings[rel] = mod_doc
-                    functions_list.extend(funcs)
-                    classes_list.extend(classes)
-                    imports_dict.update(imports)
-                    for cls in classes:
-                        if cls.docstring:
-                            class_docstrings[cls.name] = cls.docstring
-                except Exception as exc:
-                    logger.warning("Parse error %s: %s", rel, exc)
-
-        functions_list = resolve_internal_calls(
-            functions=functions_list,
-            classes=classes_list,
-            imports=imports_dict,
-            modules_dict=modules_dict,
-            package_exports=package_exports,
-            max_workers=4,
-        )
-
-        for chunk in functions_list:
-            mod_doc = module_docstrings.get(chunk.file_path)
-            cls_doc = class_docstrings.get(chunk.class_name) if chunk.class_name else None
+        fn: "FunctionChunk"
+        for fn in parsed.functions:
+            mod_doc = parsed.module_docstrings.get(fn.file_path)
+            cls_doc = parsed.class_docstrings.get(fn.class_name) if fn.class_name else None
             db.add(
                 Function(
                     repository_id=repo_id,
-                    function_id=chunk.id,
-                    name=chunk.name,
-                    file_path=chunk.file_path,
-                    class_name=chunk.class_name,
-                    nested=chunk.nested,
-                    code=chunk.code,
-                    docstring=chunk.docstring,
+                    function_id=fn.id,
+                    name=fn.name,
+                    file_path=fn.file_path,
+                    class_name=fn.class_name,
+                    nested=fn.nested,
+                    code=fn.code,
+                    docstring=fn.docstring,
                     module_docstring=mod_doc,
                     class_docstring=cls_doc,
-                    start_line=chunk.start_line,
-                    end_line=chunk.end_line,
-                    parameters=[p.to_dict() for p in chunk.parameters]
-                    if chunk.parameters
-                    else None,
-                    decorators=chunk.decorators,
-                    return_type=chunk.return_type,
-                    calls=chunk.calls,
+                    start_line=fn.start_line,
+                    end_line=fn.end_line,
+                    parameters=[p.to_dict() for p in fn.parameters] if fn.parameters else None,
+                    decorators=fn.decorators,
+                    return_type=fn.return_type,
+                    calls=fn.calls,
                 )
             )
 
-        for chunk in classes_list:
+        cls: "ClassChunk"
+        for cls in parsed.classes:
             db.add(
                 Class(
                     repository_id=repo_id,
-                    class_id=chunk.id,
-                    name=chunk.name,
-                    file_path=chunk.file_path,
-                    code=chunk.code,
-                    docstring=chunk.docstring,
-                    start_line=chunk.start_line,
-                    end_line=chunk.end_line,
-                    decorators=chunk.decorators,
-                    superclasses=chunk.superclasses,
+                    class_id=cls.id,
+                    name=cls.name,
+                    file_path=cls.file_path,
+                    code=cls.code,
+                    docstring=cls.docstring,
+                    start_line=cls.start_line,
+                    end_line=cls.end_line,
+                    decorators=cls.decorators,
+                    superclasses=cls.superclasses,
                 )
             )
 
-        repo.total_functions = len(functions_list)
-        repo.total_classes = len(classes_list)
+        repo.total_functions = len(parsed.functions)
+        repo.total_classes = len(parsed.classes)
         repo.is_parsed = True
         db.add(CommitMeta(commit_sha=sha))
         db.commit()
 
         logger.info(
             "Indexed %d functions, %d classes at %s",
-            len(functions_list),
-            len(classes_list),
+            len(parsed.functions),
+            len(parsed.classes),
             sha[:8],
         )
     except Exception:

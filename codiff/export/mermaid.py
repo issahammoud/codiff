@@ -63,17 +63,16 @@ _CHAIN_STYLES = [
 
 _INIT = (
     "%%{init: {"
-    "'layout': 'elk', "
     "'theme': 'base', "
     "'themeVariables': {"
-    "'background': '#f8fafc', "
-    "'clusterBkg': '#0f172a', "
-    "'clusterBorder': '#0f172a', "
+    "'background': '#ffffff', "
+    "'clusterBkg': '#f8fafc', "
+    "'clusterBorder': '#cbd5e1', "
     "'primaryColor': '#ffffff', "
     "'primaryBorderColor': '#e2e8f0', "
-    "'primaryTextColor': '#f8fafc', "
+    "'primaryTextColor': '#1e293b', "
     "'lineColor': '#64748b', "
-    "'fontSize': '14px', "
+    "'fontSize': '13px', "
     "'fontFamily': 'ui-monospace, SFMono-Regular, Menlo, monospace'"
     "}}}%%"
 )
