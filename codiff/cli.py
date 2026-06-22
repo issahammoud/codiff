@@ -55,10 +55,11 @@ def main():
         help="Include test functions in the diff output (hidden by default)",
     )
     diff_parser.add_argument(
-        "--mermaid",
-        action="store_true",
-        default=False,
-        help="Output a Mermaid flowchart diagram instead of the terminal render",
+        "--format",
+        choices=["terminal", "mermaid", "json"],
+        default="terminal",
+        metavar="FORMAT",
+        help="Output format: terminal (default), mermaid, or json",
     )
     diff_parser.add_argument(
         "--repo",
@@ -106,7 +107,7 @@ def main():
             base_ref=args.base,
             head_ref=args.head,
             include_tests=args.include_tests,
-            mermaid=args.mermaid,
+            fmt=args.format,
         )
 
     elif args.command == "init":
@@ -153,15 +154,14 @@ def _run_diff(
     base_ref: str,
     head_ref: str | None = None,
     include_tests: bool = False,
-    mermaid: bool = False,
+    fmt: str = "terminal",
 ) -> None:
     from codiff.db import get_db_path
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import ensure_indexed
-    from codiff.diff.mermaid import render_mermaid
-    from codiff.diff.render import render
     from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
+    from codiff.export import render_json, render_mermaid, render_terminal
 
     repo_path = os.path.abspath(repo_path)
 
@@ -181,15 +181,13 @@ def _run_diff(
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
 
-    if mermaid:
+    head_label = head_ref or "working tree"
+    if fmt == "json":
+        print(render_json(result, base_ref=base_ref, head_ref=head_label))
+    elif fmt == "mermaid":
         print(render_mermaid(result, include_tests=include_tests))
     else:
-        render(
-            result,
-            base_ref=base_ref,
-            head_ref=head_ref or "working tree",
-            include_tests=include_tests,
-        )
+        render_terminal(result, base_ref=base_ref, head_ref=head_label, include_tests=include_tests)
 
 
 if __name__ == "__main__":

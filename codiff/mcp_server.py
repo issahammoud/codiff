@@ -27,8 +27,8 @@ try:
 except OSError:
     _console = Console(file=sys.stderr, force_terminal=True)
 
-# Replace the module-level console in render.py before any render calls.
-import codiff.diff.render as _render_mod
+# Replace the module-level console in export/terminal.py before any render calls.
+import codiff.export.terminal as _render_mod
 
 _render_mod.console = _console
 
@@ -97,8 +97,8 @@ def codiff_diff(
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import ensure_indexed
-    from codiff.diff.render import render
     from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
+    from codiff.export import render_terminal as render
 
     repo_path = os.path.abspath(repo_path)
     if head_ref is not None:
