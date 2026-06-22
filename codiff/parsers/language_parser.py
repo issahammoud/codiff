@@ -10,7 +10,9 @@ The parse_code() template method orchestrates the four steps in the right order;
 subclasses never override it.
 """
 
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from tree_sitter import Language, Parser, Query, QueryCursor
 
@@ -56,6 +58,76 @@ class LanguageParser(ABC):
     def _extra_exclude_dirs(self) -> set[str]:
         """Language-specific directories to exclude. Override as needed."""
         return set()
+
+    @abstractmethod
+    def file_to_module_id(self, rel_path: str) -> str:
+        """Convert a relative file path to its canonical module identifier.
+
+        Examples
+        --------
+        Python  : 'pkg/sub/mod.py'  → 'pkg.sub.mod'
+        TS/JS   : 'src/utils/fn.ts' → 'src/utils/fn'
+        """
+
+    # ------------------------------------------------------------------
+    # Module resolution helpers  (language-agnostic orchestration,
+    # language-specific details delegated to subclass methods)
+    # ------------------------------------------------------------------
+
+    def build_modules_dict(self, repo_path: Path, gitignore=None) -> dict[str, str]:
+        """Map every importable sub-path to its canonical module identifier.
+
+        Calls *self.file_to_module_id()* for each file — fully generic,
+        no language-specific logic here.
+        """
+        from codiff.utils.files import is_venv_dir
+        from codiff.utils.gitignore_utils import is_dir_ignored
+
+        modules_dict: dict[str, str] = {}
+        init_modules: dict[str, str] = {}
+        repo_str = str(repo_path)
+
+        for root, dirs, files in os.walk(repo_path):
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in self.exclude_dirs
+                and not is_venv_dir(root, d)
+                and not is_dir_ignored(gitignore, repo_str, root, d)
+            ]
+            for file in files:
+                if not file.endswith(self.extension):
+                    continue
+                rel = str((Path(root) / file).relative_to(repo_path))
+                module_name = self.file_to_module_id(rel)
+                is_init = self._is_package_init(file)
+                parts = module_name.split(".")
+                for i in range(len(parts)):
+                    for j in range(i + 1, len(parts) + 1):
+                        sub = ".".join(parts[i:j])
+                        if is_init:
+                            init_modules[sub] = module_name
+                        elif sub not in init_modules:
+                            modules_dict[sub] = module_name
+
+        modules_dict.update(init_modules)
+        return modules_dict
+
+    def build_package_exports(self, repo_path: Path, gitignore=None) -> dict[str, str]:
+        """Return a map of re-exported names to their real locations.
+
+        Default implementation returns {} (no re-export mechanism).
+        Override in language parsers that have package re-export conventions
+        (e.g. Python's __init__.py, TypeScript's index.ts barrel files).
+        """
+        return {}
+
+    def _is_package_init(self, filename: str) -> bool:
+        """True when *filename* is a package initialiser (e.g. __init__.py).
+
+        Override if the language uses a different convention.
+        """
+        return False
 
     @abstractmethod
     def _init_queries(self) -> None:

@@ -5,6 +5,9 @@ Python-specific query definitions, AST node handling, call extraction, import
 resolution, and docstring parsing.
 """
 
+import re
+from pathlib import Path
+
 import tree_sitter_python as tspython
 from tree_sitter import Language, Query
 
@@ -24,6 +27,70 @@ class PythonParser(LanguageParser):
     @property
     def extension(self) -> str:
         return ".py"
+
+    # ------------------------------------------------------------------
+    # Module resolution  (Python-specific overrides)
+    # ------------------------------------------------------------------
+
+    def file_to_module_id(self, rel_path: str) -> str:
+        """'pkg/sub/mod.py' → 'pkg.sub.mod'"""
+        return rel_path.replace("/", ".").replace(".py", "")
+
+    def _is_package_init(self, filename: str) -> bool:
+        return filename == "__init__.py"
+
+    def build_package_exports(self, repo_path: Path, gitignore=None) -> dict[str, str]:
+        """Scan __init__.py files for re-exports (from .sub import name)."""
+        import os
+
+        from codiff.utils.files import is_venv_dir
+        from codiff.utils.gitignore_utils import is_dir_ignored
+
+        package_exports: dict[str, str] = {}
+        repo_str = str(repo_path)
+
+        for root, dirs, files in os.walk(repo_path):
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in self.exclude_dirs
+                and not is_venv_dir(root, d)
+                and not is_dir_ignored(gitignore, repo_str, root, d)
+            ]
+            if "__init__.py" not in files:
+                continue
+            init_path = Path(root) / "__init__.py"
+            rel_dir = str(init_path.parent.relative_to(repo_path))
+            package_name = "" if rel_dir == "." else rel_dir.replace("/", ".")
+            try:
+                content = init_path.read_text(encoding="utf-8", errors="ignore")
+                pattern = r"from\s+\.(\w+)\s+import\s+(?:\(([^)]+)\)|([^(\n]+))"
+                for match in re.finditer(pattern, content, re.DOTALL):
+                    submodule = match.group(1)
+                    names_str = re.sub(r"#[^\n]*", "", match.group(2) or match.group(3))
+                    for part in names_str.split(","):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        if " as " in part:
+                            orig, alias = part.split(" as ")
+                            orig, alias = orig.strip(), alias.strip()
+                        else:
+                            orig = alias = part
+                        if not re.match(r"^[a-zA-Z_]\w*$", orig or ""):
+                            continue
+                        if not re.match(r"^[a-zA-Z_]\w*$", alias or ""):
+                            continue
+                        if package_name:
+                            package_exports[f"{package_name}.{alias}"] = (
+                                f"{package_name}.{submodule}.{orig}"
+                            )
+                        else:
+                            package_exports[alias] = f"{submodule}.{orig}"
+            except Exception:
+                pass
+
+        return package_exports
 
     def _extra_exclude_dirs(self) -> set[str]:
         return {
