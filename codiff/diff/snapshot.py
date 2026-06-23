@@ -40,6 +40,8 @@ def load_from_db(db_path: str) -> GraphSnapshot:
     snapshot = GraphSnapshot()
 
     try:
+        from codiff.db import Class as DbClass
+
         for func in db.query(Function).all():
             snapshot.nodes[func.function_id] = NodeInfo(
                 function_id=func.function_id,
@@ -51,6 +53,9 @@ def load_from_db(db_path: str) -> GraphSnapshot:
                 calls=func.calls or [],
                 code=func.code or "",
             )
+        for cls in db.query(DbClass).all():
+            if cls.superclasses:
+                snapshot.class_parents[cls.class_id] = list(cls.superclasses)
     finally:
         db.close()
         engine.dispose()
@@ -80,6 +85,9 @@ def build_from_path(repo_path: str) -> GraphSnapshot:
     parsed = parse_repository(repo_path)
 
     snapshot = GraphSnapshot()
+    for cls in parsed.classes:
+        if cls.superclasses:
+            snapshot.class_parents[cls.id] = list(cls.superclasses)
     for chunk in parsed.functions:
         snapshot.nodes[chunk.id] = NodeInfo(
             function_id=chunk.id,

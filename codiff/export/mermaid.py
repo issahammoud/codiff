@@ -86,7 +86,9 @@ def _san(s: str) -> str:
 
 
 def _ns_id(file_path: str) -> str:
-    return "`" + file_path.removesuffix(".py") + "`"
+    # Backtick-quoted names with slashes break GitHub's Mermaid renderer;
+    # use sanitised underscored names instead.
+    return _san(file_path.removesuffix(".py"))
 
 
 def _class_id(file_path: str, class_name: str) -> str:
