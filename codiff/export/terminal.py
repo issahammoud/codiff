@@ -129,12 +129,6 @@ def _build_color_map(result: AnalysisResult) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _lbl(function_id: str) -> str:
-    """Display label: last 3 dotted parts, or the full id if short."""
-    parts = function_id.split(".")
-    return ".".join(parts[-3:]) if len(parts) > 3 else function_id
-
-
 def _name(function_id: str) -> str:
     """Compact label: just the bare function name (last dotted segment)."""
     return function_id.split(".")[-1]
@@ -162,48 +156,12 @@ def _display_name(fn: object) -> str:
     return name
 
 
-def _fn_label(fid: str, *, is_new: bool, color_map: dict[str, str]) -> str:
-    """Render a function name with the appropriate color.
-
-    - New + in a chain  → chain color
-    - New + isolated    → white (no markup)
-    - Existing          → dim gray
-    """
-    if not is_new:
-        return f"[dim]{_name(fid)}[/dim]"
-    color = color_map.get(fid)
-    if color:
-        return f"[{color}]{_name(fid)}[/{color}]"
-    return _name(fid)
-
-
 def _is_test(file_path: str) -> bool:
     return any(part.startswith("test") for part in Path(file_path).parts)
 
 
 def _partition(items: list, *, test: bool) -> list:
     return [i for i in items if _is_test(i.file_path) == test]
-
-
-def _truncate(items: list[str], max_items: int) -> tuple[list[str], int]:
-    if len(items) <= max_items:
-        return items, 0
-    return items[:max_items], len(items) - max_items
-
-
-def _fmt_sig(params: list[dict], return_type: Optional[str]) -> str:
-    parts: list[str] = []
-    for p in params:
-        part = p.get("name") or "?"
-        if p.get("type"):
-            part += f": {p['type']}"
-        if p.get("value") is not None:
-            part += f" = {p['value']}"
-        parts.append(part)
-    sig = "(" + ", ".join(parts) + ")"
-    if return_type:
-        sig += f" → {return_type}"
-    return sig
 
 
 def _group_key(fn: object) -> tuple[str, str]:
@@ -460,7 +418,7 @@ def _render_uml(
     # Deferred files (have removals, not called by anyone) come last
     all_fps.extend(sorted(deferred))
 
-    panels = {fp: _build_file_panel(fp, files[fp], color_map) for fp in all_fps}
+    panels = {fp: _build_file_panel(fp, files[fp], color_map, class_parents) for fp in all_fps}
     widths = {fp: _panel_min_width(fp, files[fp], color_map) for fp in all_fps}
 
     # Greedy row packing — fit as many panels per row as the terminal allows.
@@ -625,6 +583,7 @@ def _build_file_panel(
     file_path: str,
     funcs: dict,
     color_map: dict[str, str],
+    class_parents: dict[str, list[str]] | None = None,
 ) -> Panel:
     """Build a Rich Panel listing the changed functions in one file.
 
@@ -695,24 +654,96 @@ def _build_file_panel(
             ordered_classes.append(cn)
             seen.add(cn)
 
-    # ── Build content per class ───────────────────────────────────────────────
-    def _build_class_text(bucket: dict, use_short_name: bool = False) -> Text:
-        """Render the methods in one class bucket.
+    # ── Detect intra-file relationships ──────────────────────────────────────
+    # class_name → list of (rel_type, target_class_name) for classes in this file
+    all_class_names = {cn for cn in class_buckets if cn is not None}
+    file_module = file_path.replace("/", ".").replace(".py", "")
 
-        *use_short_name* — when True (inside a class box whose title already
-        shows the class name) only the method name is shown, not ClassName.method.
-        """
+    # Inheritance: use class_parents (ClassChunk.superclasses)
+    intra_inherit: dict[str, list[str]] = defaultdict(list)
+    if class_parents:
+        for cn in all_class_names:
+            cid = f"{file_module}.{cn}"
+            for parent in class_parents.get(cid, []):
+                parent = parent.split("[")[0].strip()  # strip generics
+                if parent in all_class_names and parent != cn:
+                    intra_inherit[cn].append(parent)
+
+    # Calls: scan callee function_ids for other class names in this file
+    def _is_class_like(name: str) -> bool:
+        stripped = name.lstrip("_")
+        return bool(stripped) and stripped[0].isupper()
+
+    intra_calls: dict[str, list[str]] = defaultdict(list)
+    for cn in all_class_names:
+        seen_callees: set[str] = set()
+        all_fns_in_class = (
+            class_buckets[cn]["added"]
+            + class_buckets[cn]["modified"]
+            + class_buckets[cn]["removed"]
+        )
+        for fn in all_fns_in_class:
+            fn_calls = (
+                list(getattr(fn, "new_calls", []))
+                + list(getattr(fn, "existing_calls", []))
+                + list(getattr(fn, "calls_added_new", []))
+                + list(getattr(fn, "calls_added_existing", []))
+            )
+            for call_id in fn_calls:
+                parts_c = call_id.split(".")
+                if len(parts_c) >= 2:
+                    potential = parts_c[-2]
+                    if (
+                        potential in all_class_names
+                        and potential != cn
+                        and potential not in seen_callees
+                        and _is_class_like(potential)
+                    ):
+                        seen_callees.add(potential)
+                        intra_calls[cn].append(potential)
+
+    # Merge into per-class relation list: [(rel_type, target), ...]
+    class_relations: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for cn, parents in intra_inherit.items():
+        for p in sorted(set(parents)):
+            class_relations[cn].append(("inherits", p))
+    for cn, callees in intra_calls.items():
+        for c in sorted(set(callees)):
+            # Skip if already listed as inheritance (avoids duplication
+            # when a class both inherits and calls methods of the parent)
+            if not any(r == "inherits" and t == c for r, t in class_relations[cn]):
+                class_relations[cn].append(("calls", c))
+
+    # ── Build content per class ───────────────────────────────────────────────
+    def _build_class_text(
+        bucket: dict,
+        use_short_name: bool = False,
+        relations: list[tuple[str, str]] | None = None,
+    ) -> "Text | Panel | Group":
+        """Render the methods in one class bucket, optionally prefixed with
+        a dim relationship section listing intra-file calls/inheritance."""
 
         def label(fn: object) -> str:
             return _name(getattr(fn, "function_id", "")) if use_short_name else _display_name(fn)  # type: ignore[arg-type]
 
+        # ── Added + modified ──────────────────────────────────────────────
         text = Text(justify="left")
         first = True
+
+        # Relationship section at the top of each class box
+        if relations:
+            for rel_type, target in relations:
+                if not first:
+                    text.append("\n")
+                first = False
+                text.append(f"{rel_type} ", style="dim")
+                text.append(target, style="dim italic")
+            text.append("\n")
+            text.append("──────────", style="dim")
+
         for fn in bucket["added"]:
             d = 0 if use_short_name else depth.get(fn.function_id, 0)
             if not first:
-                # Inside a class box always single newline — no blank lines
-                # between methods; outside use double newline for new chains.
                 text.append("\n" if use_short_name else ("\n\n" if d == 0 else "\n"))
             first = False
             chain_color = color_map.get(fn.function_id)
@@ -725,6 +756,7 @@ def _build_file_panel(
             text.append(label(fn), style=name_style)
             if fn.is_entry_point:
                 text.append("  entry point", style="dim")
+
         for fn in bucket["modified"]:
             if not first:
                 text.append("\n")
@@ -738,17 +770,35 @@ def _build_file_panel(
                 text.append("  calls changed", style="dim")
             else:
                 text.append("  body changed", style="dim")
-        for fn in bucket["removed"]:
-            if not first:
-                text.append("\n")
-            first = False
-            text.append("- ", style="bold red")
+
+        # ── Removed → red "deleted" sub-panel ────────────────────────────
+        if not bucket["removed"]:
+            return text
+
+        removed_text = Text(justify="left")
+        for i, fn in enumerate(bucket["removed"]):
+            if i:
+                removed_text.append("\n")
+            removed_text.append("- ", style="bold red")
             chain_color = color_map.get(fn.function_id)
-            text.append(label(fn), style=chain_color if chain_color else "default")
-        return text
+            removed_text.append(label(fn), style=chain_color if chain_color else "default")
+
+        deleted_panel = Panel(
+            removed_text,
+            title="[bold red]deleted[/bold red]",
+            box=_CLASS_BOX,
+            border_style="red",
+            padding=(0, 1),
+            expand=True,
+        )
+
+        # If there were added/modified entries above, stack with spacing
+        if not first:
+            return Group(text, deleted_panel)
+        return deleted_panel
 
     # ── Assemble renderables ──────────────────────────────────────────────────
-    parts: list = [Text("")]  # top padding inside the file panel
+    parts: list = []
     for cn in ordered_classes:
         bucket = class_buckets[cn]
         if cn is None:
@@ -756,23 +806,15 @@ def _build_file_panel(
             parts.append(_build_class_text(bucket, use_short_name=False))
         else:
             # Class methods — dashed sub-panel.
-            # Add a blank line before every class box when there is already
-            # content above it (standalone functions or another class box).
-            if parts:
-                parts.append(Text(""))
-            # use_short_name=True: class name already in the panel title.
-            # expand=True: all class panels fill the same width (the file
-            # panel's inner width), giving a uniform visual grid.
-            parts.append(
-                Panel(
-                    _build_class_text(bucket, use_short_name=True),
-                    title=f"[dim italic]{cn}[/dim italic]",
-                    box=_CLASS_BOX,
-                    border_style="grey50",
-                    padding=(0, 1),
-                    expand=True,
-                )
+            panel = Panel(
+                _build_class_text(bucket, use_short_name=True, relations=class_relations.get(cn)),
+                title=f"[dim italic]{cn}[/dim italic]",
+                box=_CLASS_BOX,
+                border_style="grey50",
+                padding=(0, 1),
+                expand=True,
             )
+            parts.append(panel)
 
     content = Group(*parts) if len(parts) > 1 else (parts[0] if parts else Text())
 
@@ -780,7 +822,7 @@ def _build_file_panel(
         content,
         title=f"[dim]{file_path}[/dim]",
         border_style="grey50",
-        padding=(0, 1),
+        padding=(1, 1),  # top=1 gives the breathing room previously added via Text("")
         expand=False,
     )
 

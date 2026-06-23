@@ -36,7 +36,7 @@ codiff diff --include-tests          # include test functions (hidden by default
 
 | Format | Description |
 |---|---|
-| `terminal` | Colored terminal output with call-chain boxes (default) |
+| `terminal` | Colored terminal output with UML-style boxes (default) |
 | `mermaid` | Mermaid `classDiagram` — paste into any Markdown file or PR description |
 | `json` | Structured JSON — consumed by editor integrations (e.g. the VS Code extension) |
 
@@ -54,9 +54,11 @@ The agent calls `codiff_diff` at the end of every response that modifies files. 
 
 ## Reading the terminal output
 
-The output shows one box per changed file. Boxes are laid out side by side when they fit the terminal width, with `────▶` arrows between adjacent connected boxes.
+The output shows one box per changed file. Boxes are laid out side by side when they fit the terminal width, with labeled arrows between adjacent connected boxes.
 
-### Inside each box
+### Inside each file box
+
+Methods belonging to the same class are grouped into a **dashed sub-box** (╭╌╌╌ `ClassName` ╌╌╌╮). Standalone functions appear directly in the file box. Deleted functions are collected into a red **╭╌╌╌ deleted ╌╌╌╮** sub-box, always shown after additions and modifications.
 
 Functions are listed with an indicator and an annotation:
 
@@ -75,6 +77,20 @@ Functions are listed with an indicator and an annotation:
 
 For added functions, `→` arrows show intra-file call relationships — a function indented under another calls it.
 
+### Intra-file class relationships
+
+When two changed classes in the same file are related, each class box shows a dim annotation before its methods:
+
+```
+╭╌╌╌ PageAwarePreChunker ╌╌╌╮
+│ calls  PageAwarePreChunkBuilder  │
+│ ──────────────                   │
+│ + __init__                       │
+╰╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╯
+```
+
+Relationship types: `calls` (method calls to another class) and `inherits` (superclass relationship detected from class definitions).
+
 ### Colors
 
 Functions that form a connected call chain share a color across the entire output — across boxes, across files. All magenta names belong to one chain, all cyan to another.
@@ -83,6 +99,13 @@ Functions that form a connected call chain share a color across the entire outpu
 - **White** on the function name — added/modified but not connected to any chain
 - **`~` yellow** — always marks a modified function regardless of chain membership
 
-### Arrows between boxes
+### Arrows between file boxes
 
-An arrow `────▶` appears between two adjacent boxes when a function in the left box calls a function in the right box. The arrow color matches the callee's chain color.
+Labeled arrows appear between adjacent file boxes when there is a cross-file relationship:
+
+| Label | Meaning |
+|---|---|
+| `calls ────▶` | A function in the left file calls a function in the right file |
+| `inherits ────▶` | A class in the left file inherits from a class in the right file |
+
+Arrows are vertically centered between the two boxes. Files containing only deletions and not referenced by other changed files appear at the end of the output.
