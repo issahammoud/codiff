@@ -1,24 +1,24 @@
 """Render an AnalysisResult to the terminal using Rich.
 
-Groups changes into source vs. test functions. Within each group, renders
-compact tables for Added, Modified, and Removed. Issues appear at the end.
+Groups changes into source vs. test functions and renders a UML-style
+box layout: one panel per file, side by side when they fit the terminal,
+with arrows between connected panels.
 
 Color scheme
 ------------
 - New functions that share a call-graph chain are assigned a distinct color.
-  The same color is used consistently in both the Function column and every
+  The same color is used consistently in both the function name and every
   Caller / Callee reference, so you can visually trace a chain at a glance.
 - New functions that belong to no chain (isolated additions) stay white.
 - Existing / pre-diff functions are rendered dim (gray).
 """
 
 from collections import defaultdict
-from itertools import groupby
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Optional
 
 from rich.box import Box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -33,19 +33,17 @@ from codiff.utils.terminal import detect_width
 
 console = Console(force_terminal=True)
 
-_CALLER_MAX = 5
-_CALLEE_MAX = 6
-
-# Solid underline under column headers; dashed line at add_section() group breaks.
-_BOX = Box(
-    "    \n"  # top
-    "    \n"  # head
-    " ── \n"  # head_row  (solid ─ under header)
-    "    \n"  # mid       (unused — no line between every row)
-    " ╌╌ \n"  # row       (dashed ╌ at section / group breaks)
-    "    \n"  # foot_row
-    "    \n"  # foot
-    "    \n",  # bottom
+# Dashed box for class sub-panels inside a file panel.
+# Rich Box format: exactly 4 chars per row = (left, fill, mid-divider, right)
+_CLASS_BOX = Box(
+    "╭╌╌╮\n"  # top
+    "│  │\n"  # head
+    "├╌╌┤\n"  # head_row (separator under title)
+    "│  │\n"  # mid
+    "├╌╌┤\n"  # row
+    "├╌╌┤\n"  # foot_row
+    "│  │\n"  # foot
+    "╰╌╌╯\n",  # bottom
     ascii=False,
 )
 
@@ -208,20 +206,6 @@ def _fmt_sig(params: list[dict], return_type: Optional[str]) -> str:
     return sig
 
 
-def _make_table(*columns: tuple[str, dict]) -> Table:
-    t = Table(
-        box=_BOX,
-        show_header=True,
-        header_style="dim",
-        border_style="grey50",
-        padding=(0, 1),
-        show_edge=False,
-    )
-    for name, kwargs in columns:
-        t.add_column(name, **kwargs)
-    return t
-
-
 def _group_key(fn: object) -> tuple[str, str]:
     """Sort/group key: (file_path, class_name) for section breaks."""
     return (fn.file_path, fn.class_name or "")  # type: ignore[attr-defined]
@@ -272,32 +256,6 @@ def _order_group(
             ordered.append(fn)
 
     return ordered
-
-
-def _add_grouped_rows(
-    t: Table,
-    fns: list[Any],
-    has_class: bool,
-    indicator: str,
-    extra_cells: Callable[[Any], list[str]],
-) -> None:
-    """Add rows to *t* grouped by (file, class).
-
-    File, class, and indicator are printed only once per group at the center
-    row. A dashed section separator is inserted between groups.
-    """
-    groups = [(key, list(grp)) for key, grp in groupby(fns, key=_group_key)]
-    for g_idx, ((file_path, class_name), group_fns) in enumerate(groups):
-        if g_idx > 0:
-            t.add_section()
-        mid = (len(group_fns) - 1) // 2
-        for i, fn in enumerate(group_fns):
-            show = i == mid
-            row = [indicator if show else "", file_path if show else ""]
-            if has_class:
-                row.append((class_name or "[dim]—[/dim]") if show else "")
-            row.extend(extra_cells(fn))
-            t.add_row(*row)
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +323,13 @@ def render(
 
     color_map = _build_color_map(result)
 
-    _render_group("Source", src_added, src_modified, src_removed, color_map, term_w)
+    _render_group(
+        "Source", src_added, src_modified, src_removed, color_map, term_w, result.class_parents
+    )
     if include_tests:
-        _render_group("Tests", tst_added, tst_modified, tst_removed, color_map, term_w)
+        _render_group(
+            "Tests", tst_added, tst_modified, tst_removed, color_map, term_w, result.class_parents
+        )
     console.print()
 
 
@@ -378,13 +340,14 @@ def _render_group(
     removed: list[RemovedFunctionInfo],
     color_map: dict[str, str],
     term_w: int,
+    class_parents: dict[str, list[str]] | None = None,
 ) -> None:
     if not added and not modified and not removed:
         return
     console.print()
     console.rule(f"[bold]{title}[/bold]", style="dim blue")
     console.print()
-    _render_uml(added, modified, removed, color_map, term_w)
+    _render_uml(added, modified, removed, color_map, term_w, class_parents)
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +361,7 @@ def _render_uml(
     removed: list[RemovedFunctionInfo],
     color_map: dict[str, str],
     term_w: int,
+    class_parents: dict[str, list[str]] | None = None,
 ) -> None:
     """Render file boxes side-by-side with arrows for cross-file relationships."""
     # Group changes by file
@@ -437,23 +401,64 @@ def _render_uml(
             if callee_file and callee_file != m_fn.file_path:
                 cross[(m_fn.file_path, callee_file)].append(callee_id)
 
-    # Sort files: upstream (more outgoing) first, downstream last
-    out_count: dict[str, int] = defaultdict(int)
+    # Detect cross-file inheritance from ClassChunk.superclasses (via class_parents).
+    # class_parents: class_id → list of superclass names (e.g. "PreChunkBuilder")
+    # We map each class_id to its file via the changed functions, then check if any
+    # superclass name matches a class in a different file.
+    inherit: set[tuple[str, str]] = set()
+    if class_parents:
+        # Build: class_name → file_path from changed functions
+        class_name_to_file: dict[str, str] = {}
+        for fn in list(added) + list(modified) + list(removed):
+            if fn.class_name:
+                class_name_to_file[fn.class_name] = fn.file_path
+
+        # Build: class_id → file_path (class_id = "module.path.ClassName")
+        class_id_to_file: dict[str, str] = {}
+        for fn in list(added) + list(modified) + list(removed):
+            if fn.class_name:
+                # Derive class_id prefix from function_id
+                parts = fn.function_id.split(".")
+                if len(parts) >= 2:
+                    class_id = ".".join(parts[:-1])  # drop the method name
+                    class_id_to_file[class_id] = fn.file_path
+
+        for class_id, parents in class_parents.items():
+            child_file = class_id_to_file.get(class_id)
+            if not child_file:
+                continue
+            for parent_name in parents:
+                # Strip generic type params (e.g. "BaseModel[T]" → "BaseModel")
+                parent_name = parent_name.split("[")[0].strip()
+                parent_file = class_name_to_file.get(parent_name)
+                if parent_file and parent_file != child_file:
+                    inherit.add((child_file, parent_file))
+
+    # Count how many cross-file call arrows point INTO each file
     in_count: dict[str, int] = defaultdict(int)
-    for from_f, to_f in cross:
-        out_count[from_f] += 1
+    for _, to_f in cross:
         in_count[to_f] += 1
-    # Sort files so connected pairs are adjacent, maximising chance of arrows.
+
+    # Files deferred to the end: has removals AND nobody calls into it.
+    # This covers both removed-only files and mixed files that happen to
+    # not be depended upon — their deletions are easier to read last.
+    deferred = {fp for fp in files if files[fp]["removed"] and in_count[fp] == 0}
+    primary = {fp for fp in files if fp not in deferred}
+
+    # Sort primary files so connected pairs are adjacent (maximises arrows).
     placed: set[str] = set()
     all_fps: list[str] = []
     for from_fp, to_fp in sorted(cross):
         for fp in (from_fp, to_fp):
-            if fp in files and fp not in placed:
+            if fp in primary and fp not in placed:
                 all_fps.append(fp)
                 placed.add(fp)
-    for fp in sorted(files):
+    for fp in sorted(primary):
         if fp not in placed:
             all_fps.append(fp)
+
+    # Deferred files (have removals, not called by anyone) come last
+    all_fps.extend(sorted(deferred))
 
     panels = {fp: _build_file_panel(fp, files[fp], color_map) for fp in all_fps}
     widths = {fp: _panel_min_width(fp, files[fp], color_map) for fp in all_fps}
@@ -482,7 +487,7 @@ def _render_uml(
         for i, fp in enumerate(row_fps):
             grid.add_column(vertical="top", min_width=widths[fp])
             if i < len(row_fps) - 1:
-                grid.add_column(vertical="top", width=10)
+                grid.add_column(vertical="middle", width=12)  # centred arrow column
         row_cells: list = []
         for i, fp in enumerate(row_fps):
             row_cells.append(panels[fp])
@@ -491,11 +496,22 @@ def _render_uml(
                 fwd = cross.get((fp, next_fp), [])
                 rev = cross.get((next_fp, fp), [])
                 callee_ids = fwd + rev
-                row_cells.append(
-                    _arrow_cell(callee_ids, color_map, reverse=bool(rev and not fwd))
-                    if callee_ids
-                    else Text("")
-                )
+                has_calls = bool(callee_ids)
+                has_inherits = (fp, next_fp) in inherit or (next_fp, fp) in inherit
+                if has_calls or has_inherits:
+                    row_cells.append(
+                        _arrow_cell(
+                            callee_ids,
+                            color_map,
+                            reverse=bool(rev and not fwd),
+                            has_calls=has_calls,
+                            has_inherits=has_inherits,
+                            inherit_reverse=(next_fp, fp) in inherit
+                            and (fp, next_fp) not in inherit,
+                        )
+                    )
+                else:
+                    row_cells.append(Text(""))
         grid.add_row(*row_cells)
         console.print(grid)
 
@@ -610,10 +626,12 @@ def _build_file_panel(
     funcs: dict,
     color_map: dict[str, str],
 ) -> Panel:
-    """Build a Rich Panel listing the changed functions in one file."""
-    content = Text()
+    """Build a Rich Panel listing the changed functions in one file.
 
-    # Added: entry points first, then rest in DFS order from _order_group
+    Methods belonging to the same class are wrapped in a dashed sub-panel
+    for visual grouping. Standalone functions (no class) appear directly.
+    """
+    # ── Order added functions (entry-points first, then DFS by chain) ────────
     added_ordered: list[AddedFunctionInfo] = []
     fn_by_group: dict[tuple[str, str], list[AddedFunctionInfo]] = defaultdict(list)
     for fn in funcs["added"]:
@@ -621,15 +639,7 @@ def _build_file_panel(
     for grp_key in _topo_order_groups(funcs["added"]):
         added_ordered.extend(_order_group(fn_by_group[grp_key], color_map))
 
-    # Depth rule: use the most recent same-color caller in the list, BUT only
-    # if there is no "chain break" between that caller and the current function.
-    # A chain break is a depth-0 function of a DIFFERENT color appearing in
-    # between — it signals a new independent chain starting, so the current
-    # function must also start at depth 0.
-    # This lets siblings share the same depth as their parent's other children
-    # (e.g. _render_modified_trees appears at depth 2 after build_subtree at
-    # depth 3, correctly de-indented as a sibling), while still preventing
-    # isolated functions from creating false parent-child appearances.
+    # Compute indent depth within each class group (depth rule: same-color caller)
     depth: dict[str, int] = {}
     for i, fn in enumerate(added_ordered):
         my_color = color_map.get(fn.function_id)
@@ -641,7 +651,6 @@ def _build_file_panel(
                 and my_color is not None
                 and color_map.get(prev.function_id) == my_color
             ):
-                # Check for a chain break between j and i
                 broken = any(
                     depth[added_ordered[k].function_id] == 0
                     and color_map.get(added_ordered[k].function_id) != my_color
@@ -652,45 +661,120 @@ def _build_file_panel(
                 break
         depth[fn.function_id] = (parent_depth + 1) if parent_depth is not None else 0
 
-    first = True
+    # ── Bucket all functions by class ─────────────────────────────────────────
+    # class_name → {"added": [...], "modified": [...], "removed": [...]}
+    # Preserve the topo ordering for added; sort modified and removed.
+    class_buckets: dict[str | None, dict] = {}
     for fn in added_ordered:
-        d = depth[fn.function_id]
-        # Blank line between independent chains (new entry point, not the first)
-        if not first:
-            content.append("\n\n" if d == 0 else "\n")
-        first = False
-        chain_color = color_map.get(fn.function_id)
-        name_style = f"bold {chain_color}" if chain_color else "bold"
-        if d == 0:
-            content.append("+ ", style="bold green")
-        else:
-            content.append("  " * d, style="")
-            content.append("→ ", style="dim green")
-        content.append(_display_name(fn), style=name_style)
-        if fn.is_entry_point:
-            content.append("  entry point", style="dim")
-
+        cn = fn.class_name
+        class_buckets.setdefault(cn, {"added": [], "modified": [], "removed": []})["added"].append(
+            fn
+        )
     for fn in sorted(funcs["modified"], key=lambda f: _display_name(f)):
-        if not first:
-            content.append("\n")
-        first = False
-        content.append("~ ", style="bold yellow")
-        chain_color = color_map.get(fn.function_id)
-        content.append(_display_name(fn), style=chain_color if chain_color else "default")
-        if fn.signature_changed:
-            content.append("  sig changed", style="dim")
-        elif fn.calls_added_new or fn.calls_added_existing or fn.calls_removed:
-            content.append("  calls changed", style="dim")
-        else:
-            content.append("  body changed", style="dim")
-
+        cn = fn.class_name
+        class_buckets.setdefault(cn, {"added": [], "modified": [], "removed": []})[
+            "modified"
+        ].append(fn)
     for fn in sorted(funcs["removed"], key=lambda f: _display_name(f)):
-        if not first:
-            content.append("\n")
-        first = False
-        content.append("- ", style="bold red")
-        chain_color = color_map.get(fn.function_id)
-        content.append(_display_name(fn), style=chain_color if chain_color else "default")
+        cn = fn.class_name
+        class_buckets.setdefault(cn, {"added": [], "modified": [], "removed": []})[
+            "removed"
+        ].append(fn)
+
+    # Order: standalone (None) first, then classes in the order they appeared
+    ordered_classes: list[str | None] = []
+    if None in class_buckets:
+        ordered_classes.append(None)
+    seen: set[str | None] = {None}
+    for fn in added_ordered:
+        if fn.class_name not in seen:
+            ordered_classes.append(fn.class_name)
+            seen.add(fn.class_name)
+    for cn in class_buckets:
+        if cn not in seen:
+            ordered_classes.append(cn)
+            seen.add(cn)
+
+    # ── Build content per class ───────────────────────────────────────────────
+    def _build_class_text(bucket: dict, use_short_name: bool = False) -> Text:
+        """Render the methods in one class bucket.
+
+        *use_short_name* — when True (inside a class box whose title already
+        shows the class name) only the method name is shown, not ClassName.method.
+        """
+
+        def label(fn: object) -> str:
+            return _name(getattr(fn, "function_id", "")) if use_short_name else _display_name(fn)  # type: ignore[arg-type]
+
+        text = Text(justify="left")
+        first = True
+        for fn in bucket["added"]:
+            d = 0 if use_short_name else depth.get(fn.function_id, 0)
+            if not first:
+                # Inside a class box always single newline — no blank lines
+                # between methods; outside use double newline for new chains.
+                text.append("\n" if use_short_name else ("\n\n" if d == 0 else "\n"))
+            first = False
+            chain_color = color_map.get(fn.function_id)
+            name_style = f"bold {chain_color}" if chain_color else "bold"
+            if d == 0:
+                text.append("+ ", style="bold green")
+            else:
+                text.append("  " * d)
+                text.append("→ ", style="dim green")
+            text.append(label(fn), style=name_style)
+            if fn.is_entry_point:
+                text.append("  entry point", style="dim")
+        for fn in bucket["modified"]:
+            if not first:
+                text.append("\n")
+            first = False
+            text.append("~ ", style="bold yellow")
+            chain_color = color_map.get(fn.function_id)
+            text.append(label(fn), style=chain_color if chain_color else "default")
+            if fn.signature_changed:
+                text.append("  sig changed", style="dim")
+            elif fn.calls_added_new or fn.calls_added_existing or fn.calls_removed:
+                text.append("  calls changed", style="dim")
+            else:
+                text.append("  body changed", style="dim")
+        for fn in bucket["removed"]:
+            if not first:
+                text.append("\n")
+            first = False
+            text.append("- ", style="bold red")
+            chain_color = color_map.get(fn.function_id)
+            text.append(label(fn), style=chain_color if chain_color else "default")
+        return text
+
+    # ── Assemble renderables ──────────────────────────────────────────────────
+    parts: list = [Text("")]  # top padding inside the file panel
+    for cn in ordered_classes:
+        bucket = class_buckets[cn]
+        if cn is None:
+            # Standalone functions — no sub-box, use full display name
+            parts.append(_build_class_text(bucket, use_short_name=False))
+        else:
+            # Class methods — dashed sub-panel.
+            # Add a blank line before every class box when there is already
+            # content above it (standalone functions or another class box).
+            if parts:
+                parts.append(Text(""))
+            # use_short_name=True: class name already in the panel title.
+            # expand=True: all class panels fill the same width (the file
+            # panel's inner width), giving a uniform visual grid.
+            parts.append(
+                Panel(
+                    _build_class_text(bucket, use_short_name=True),
+                    title=f"[dim italic]{cn}[/dim italic]",
+                    box=_CLASS_BOX,
+                    border_style="grey50",
+                    padding=(0, 1),
+                    expand=True,
+                )
+            )
+
+    content = Group(*parts) if len(parts) > 1 else (parts[0] if parts else Text())
 
     return Panel(
         content,
@@ -705,177 +789,35 @@ def _arrow_cell(
     callee_ids: list[str],
     color_map: dict[str, str],
     reverse: bool = False,
+    has_calls: bool = True,
+    has_inherits: bool = False,
+    inherit_reverse: bool = False,
 ) -> Text:
-    """Arrow between two connected panels, colored with the callee's chain color."""
-    # Use the chain color of the first recognized callee; fall back to dim green
-    color = "dim green"
-    for fid in callee_ids:
-        c = color_map.get(fid)
-        if c:
-            color = c
-            break
-    arrow = Text(justify="center")
-    arrow.append("◀────" if reverse else "────▶", style=color)
-    return arrow
+    """Arrow(s) between two connected panels, each labeled with its type.
 
+    All arrows share the same shape (────▶ / ◀────); the label above
+    distinguishes the relationship type so new types can be added easily.
+    """
+    cell = Text(justify="center")
+    first = True
 
-# ---------------------------------------------------------------------------
-# Table builders (kept for --table fallback)
-# ---------------------------------------------------------------------------
+    if has_calls:
+        call_color = "dim green"
+        for fid in callee_ids:
+            c = color_map.get(fid)
+            if c:
+                call_color = c
+                break
+        if not first:
+            cell.append("\n")
+        first = False
+        cell.append("calls\n", style="dim")
+        cell.append("◀────" if reverse else "────▶", style=call_color)
 
+    if has_inherits:
+        if not first:
+            cell.append("\n")
+        cell.append("inherits\n", style="dim")
+        cell.append("◀────" if inherit_reverse else "────▶", style="dim blue")
 
-def _added_table(functions: list[AddedFunctionInfo], color_map: dict[str, str]) -> Table:
-    # Sort by group, then order within each group: entry points first, then BFS.
-    grouped = sorted(functions, key=_group_key)
-    fns: list[AddedFunctionInfo] = []
-    for _, grp in groupby(grouped, key=_group_key):
-        fns.extend(_order_group(list(grp), color_map))
-    has_class = any(fn.class_name for fn in fns)
-    cols: list[tuple[str, dict]] = [
-        ("", {"width": 1, "style": "green bold"}),
-        ("File", {"style": "dim", "no_wrap": True}),
-    ]
-    if has_class:
-        cols.append(("Class", {"style": "dim", "no_wrap": True, "justify": "center"}))
-    cols.append(("Function", {"no_wrap": True}))
-    cols.append(("← Caller / → Callee", {}))
-    t = _make_table(*cols)
-    _add_grouped_rows(
-        t,
-        fns,
-        has_class,
-        "+",
-        lambda fn: [
-            _fn_label(fn.function_id, is_new=True, color_map=color_map),
-            _connections_cell(fn, color_map),
-        ],
-    )
-    return t
-
-
-def _connections_cell(fn: AddedFunctionInfo, color_map: dict[str, str]) -> str:
-    lines: list[str] = []
-
-    if fn.is_entry_point:
-        lines.append("[dim]entry point[/dim]")
-    else:
-        new_set = set(fn.new_callers)
-        all_callers = fn.existing_callers + fn.new_callers
-        shown, rest = _truncate(all_callers, _CALLER_MAX)
-        parts = [_fn_label(c, is_new=c in new_set, color_map=color_map) for c in shown]
-        if rest:
-            parts.append(f"[dim]+{rest}…[/dim]")
-        lines.append("[dim]←[/dim] " + ", ".join(parts))
-
-    all_calls = fn.existing_calls + fn.new_calls
-    if all_calls:
-        new_set = set(fn.new_calls)
-        shown, rest = _truncate(all_calls, _CALLEE_MAX)
-        parts = [_fn_label(c, is_new=c in new_set, color_map=color_map) for c in shown]
-        if rest:
-            parts.append(f"[dim]+{rest}…[/dim]")
-        lines.append("[dim]→[/dim] " + ", ".join(parts))
-
-    return "\n".join(lines)
-
-
-def _modified_table(functions: list[ModifiedFunctionInfo], color_map: dict[str, str]) -> Table:
-    fns = sorted(functions, key=lambda f: (*_group_key(f), _name(f.function_id)))
-    has_class = any(fn.class_name for fn in fns)
-    cols: list[tuple[str, dict]] = [
-        ("", {"width": 1, "style": "yellow bold"}),
-        ("File", {"style": "dim", "no_wrap": True}),
-    ]
-    if has_class:
-        cols.append(("Class", {"style": "dim", "no_wrap": True, "justify": "center"}))
-    cols.append(("Function", {"no_wrap": True}))
-    cols.append(("Changes", {}))
-    t = _make_table(*cols)
-    _add_grouped_rows(
-        t,
-        fns,
-        has_class,
-        "~",
-        lambda fn: [_name(fn.function_id), _changes_cell(fn, color_map)],
-    )
-    return t
-
-
-def _changes_cell(fn: ModifiedFunctionInfo, color_map: dict[str, str]) -> str:
-    lines: list[str] = []
-
-    if fn.signature_changed:
-        old_sig = _fmt_sig(fn.old_params, fn.old_return_type)
-        new_sig = _fmt_sig(fn.new_params, fn.new_return_type)
-        lines.append(f"[dim]was[/dim] {old_sig}  [dim]→[/dim]  [dim]now[/dim] {new_sig}")
-
-    added_calls = fn.calls_added_new + fn.calls_added_existing
-    if added_calls:
-        new_set = set(fn.calls_added_new)
-        shown, rest = _truncate(added_calls, _CALLEE_MAX)
-        parts = [_fn_label(c, is_new=c in new_set, color_map=color_map) for c in shown]
-        if rest:
-            parts.append(f"[dim]+{rest}…[/dim]")
-        lines.append("[green]+[/green] " + ", ".join(parts))
-
-    if fn.calls_removed:
-        shown, rest = _truncate(fn.calls_removed, _CALLEE_MAX)
-        parts = [f"[dim]{_name(c)}[/dim]" for c in shown]
-        if rest:
-            parts.append(f"[dim]+{rest}…[/dim]")
-        lines.append("[red]-[/red] " + ", ".join(parts))
-
-    if not lines:
-        lines.append("[dim]body changed[/dim]")
-
-    return "\n".join(lines)
-
-
-def _removed_table(functions: list[RemovedFunctionInfo]) -> Table:
-    fns = sorted(functions, key=lambda f: (*_group_key(f), _name(f.function_id)))
-    has_class = any(fn.class_name for fn in fns)
-    cols: list[tuple[str, dict]] = [
-        ("", {"width": 1, "style": "red bold"}),
-        ("File", {"style": "dim", "no_wrap": True}),
-    ]
-    if has_class:
-        cols.append(("Class", {"style": "dim", "no_wrap": True, "justify": "center"}))
-    cols.append(("Function", {"no_wrap": True}))
-    cols.append(("Was Called By", {}))
-    t = _make_table(*cols)
-    _add_grouped_rows(t, fns, has_class, "-", _removed_extra_cells)
-    return t
-
-
-def _removed_extra_cells(fn: RemovedFunctionInfo) -> list[str]:
-    shown, rest = _truncate(fn.was_called_by, _CALLER_MAX)
-    parts = [f"[dim]{_name(c)}[/dim]" for c in shown]
-    if rest:
-        parts.append(f"[dim]+{rest}…[/dim]")
-    return [_name(fn.function_id), ", ".join(parts) if parts else "[dim]—[/dim]"]
-
-
-# ---------------------------------------------------------------------------
-# Issues
-# ---------------------------------------------------------------------------
-
-
-def render_to_string(
-    result: AnalysisResult,
-    base_ref: str = "HEAD",
-    head_ref: str = "working tree",
-    include_tests: bool = False,
-) -> str:
-    """Return the rendered diff report as a plain-text string (no ANSI colors)."""
-    from io import StringIO
-
-    buf = StringIO()
-    cap = Console(file=buf, no_color=True, force_terminal=False, width=120)
-    global console
-    _old = console
-    console = cap
-    try:
-        render(result, base_ref, head_ref, include_tests)
-    finally:
-        console = _old
-    return buf.getvalue()
+    return cell

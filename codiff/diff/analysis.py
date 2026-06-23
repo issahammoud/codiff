@@ -32,6 +32,7 @@ def analyze(
         added=_added(diff, added_ids, head, head_reverse),
         modified=_modified(diff, added_ids, base, head, head_reverse),
         removed=_removed(diff, base_reverse),
+        class_parents=head.class_parents,
     )
 
 

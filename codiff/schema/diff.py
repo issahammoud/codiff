@@ -26,6 +26,8 @@ class GraphSnapshot:
 
     nodes: dict[str, NodeInfo] = field(default_factory=dict)
     edges: set[tuple[str, str]] = field(default_factory=set)
+    # class_id → list of superclass names (populated from ClassChunk.superclasses)
+    class_parents: dict[str, list[str]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -104,3 +106,5 @@ class AnalysisResult:
     added: list[AddedFunctionInfo]
     modified: list[ModifiedFunctionInfo]
     removed: list[RemovedFunctionInfo]
+    # class_id → superclass names, from head snapshot (for rendering inheritance arrows)
+    class_parents: dict[str, list[str]] = field(default_factory=dict)
