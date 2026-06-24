@@ -39,45 +39,43 @@ Show the structural call-graph diff of the current Python codebase against a
 base git reference.
 
 WHEN TO CALL
-Call this tool at the END of every response in which you created, edited, or
-deleted any Python file. Do not wait for a commit — show the structural diff
-immediately so the user can see what changed architecturally after each of
-your responses. The output is rendered directly in the user's terminal with
-full colors and formatting.
+Call this tool once when you are about to create a pull request — NOT after
+every file edit. Use format="mermaid" to get a Mermaid class diagram and
+embed it in the PR description so reviewers see the structural diff rendered
+as a UML diagram on GitHub.
 
-OUTPUT FORMAT
-The output is split into two top-level groups: Source and Tests.
-Within each group there are Added, Modified, and Removed tables.
-Columns: File | [Class] | Function | context column.
+HOW TO COMPARE MAIN VS THE CURRENT BRANCH
+Pass base_ref="main" and head_ref="HEAD" to compare the main branch against
+the tip of the current branch (ignoring any uncommitted changes):
 
-ADDED TABLE — "← Caller / → Callee" column:
-  "entry point"  nothing calls this function; it is new public surface (API,
-                 CLI command, test entry, etc.)
-  "← caller"    an existing function that now calls this new function —
-                 this is where the new code hooks into the existing codebase
-  "→ callee"    a function this new function calls
+  codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")
 
-  WHITE names = functions that already existed before this diff
-  GRAY  names = functions also added in this same diff
+The returned Mermaid block should be included in the PR body, for example:
 
-MODIFIED TABLE — "Changes" column:
-  "body changed"           implementation changed, same signature and calls
-  "+ callee"               this function now calls callee
-  "- callee"               this function no longer calls callee
-  "was (...) → now (...)"  signature changed
+  ## Structural diff
+  <paste the returned string here>
 
-REMOVED TABLE — "Was Called By" lists what used to call the removed function.
+GitHub renders Mermaid natively — no plugin needed.
+
+READING THE TERMINAL OUTPUT
+Each changed file appears as a box. Methods of the same class are grouped in
+a dashed sub-box (╭╌╌╌ ClassName ╌╌╌╮). Deleted functions are collected in a
+red sub-box titled "deleted".
+
+Function indicators:
+  +  green   added      ~  yellow  modified      -  red  removed
+
+Annotations:
+  "entry point"   no callers — new public surface
+  "sig changed"   parameters or return type changed
+  "calls changed" now calls different functions
+  "body changed"  implementation changed, same signature
 
 CHAIN COLORS
-Functions that belong to the same connected call chain share a color across
-the entire output (both the Function column and every Caller/Callee
-reference). All cyan names are one chain; all magenta names are another.
-This lets you visually trace a feature end-to-end at a glance.
-Gray = pre-existing code (context). White = new but isolated.
+Functions in the same connected call chain share a color across all files.
+Magenta names = one chain, cyan = another. Trace a feature end-to-end at a glance.
 
-ORDERING
-Within each (file, class) block, entry points appear first, then their
-callees in depth-first order so each call chain reads top-to-bottom.
+Arrows between file boxes are labeled: "calls ────▶" or "inherits ────▶".
 
 By default, test functions are excluded. Pass include_tests=True to show them.
 """
@@ -89,8 +87,13 @@ def codiff_diff(
     base_ref: str = "HEAD",
     head_ref: Optional[str] = None,
     include_tests: bool = False,
+    format: str = "terminal",
 ) -> str:
-    """Render the structural call-graph diff directly to the user's terminal."""
+    """Compute and render the structural call-graph diff.
+
+    Returns an empty string for format="terminal" (output goes to the TTY).
+    Returns the diagram/data as a string for format="mermaid" or "json".
+    """
     import os
 
     from codiff.db import get_db_path
@@ -98,7 +101,7 @@ def codiff_diff(
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import ensure_indexed
     from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
-    from codiff.export import render_terminal as render
+    from codiff.export import render_json, render_mermaid, render_terminal
 
     repo_path = os.path.abspath(repo_path)
     if head_ref is not None:
@@ -109,10 +112,22 @@ def codiff_diff(
         db = get_db_path(repo_path)
         base = load_from_db(db)
         head = build_from_path(repo_path)
+
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
-    render(
-        result, base_ref=base_ref, head_ref=head_ref or "working tree", include_tests=include_tests
+    head_label = head_ref or "working tree"
+
+    if format == "mermaid":
+        return render_mermaid(result, include_tests=include_tests)
+    if format == "json":
+        return render_json(result, base_ref=base_ref, head_ref=head_label)
+
+    # terminal — render to TTY, return empty string
+    render_terminal(
+        result,
+        base_ref=base_ref,
+        head_ref=head_label,
+        include_tests=include_tests,
     )
     return ""
 

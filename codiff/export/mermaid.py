@@ -86,9 +86,10 @@ def _san(s: str) -> str:
 
 
 def _ns_id(file_path: str) -> str:
-    # Backtick-quoted names with slashes break GitHub's Mermaid renderer;
-    # use sanitised underscored names instead.
-    return _san(file_path.removesuffix(".py"))
+    # Hyphens as path separator: readable, valid in Mermaid identifiers,
+    # no nesting, no GitHub issues.
+    # e.g. codiff/export/mermaid.py → codiff-export-mermaid
+    return file_path.removesuffix(".py").replace("/", "-").replace("_", "-")
 
 
 def _class_id(file_path: str, class_name: str) -> str:
@@ -111,11 +112,7 @@ def _method(fid: str) -> str:
 
 
 def _added_line(fn: AddedFunctionInfo) -> str:
-    name = _method(fn.function_id)
-    if fn.is_entry_point:
-        return f"+ {name}()  entry point"
-    n = len(fn.new_callers) + len(fn.existing_callers)
-    return f"+ {name}()  ← {n} caller{'s' if n != 1 else ''}" if n else f"+ {name}()"
+    return f"+ {_method(fn.function_id)}()"
 
 
 def _modified_line(fn: ModifiedFunctionInfo) -> str:
@@ -294,6 +291,27 @@ def render_mermaid(result: AnalysisResult, include_tests: bool = False) -> str:
             if caller and src and caller != src:
                 edges.add((caller, src))
 
+    # ── Build inheritance edges from class_parents ───────────────────────────
+    # Map class_name → cid for all changed classes (to look up by name)
+    class_name_to_cid: dict[str, str] = {}
+    for fp, classes in files.items():
+        for cn in classes:
+            if cn is not None:
+                class_name_to_cid[cn] = _class_id(fp, cn)
+
+    inherit_edges: set[tuple[str, str]] = set()
+    if result.class_parents:
+        for class_id, parents in result.class_parents.items():
+            child_name = class_id.split(".")[-1]
+            child_cid = class_name_to_cid.get(child_name)
+            if not child_cid:
+                continue
+            for parent_name in parents:
+                parent_name = parent_name.split("[")[0].strip()
+                parent_cid = class_name_to_cid.get(parent_name)
+                if parent_cid and parent_cid != child_cid:
+                    inherit_edges.add((child_cid, parent_cid))
+
     # ── Topo-sort namespaces (callers before callees) ────────────────────────
     ns_edges: set[tuple[str, str]] = set()
     for src, dst in edges:
@@ -301,7 +319,26 @@ def render_mermaid(result: AnalysisResult, include_tests: bool = False) -> str:
         if sfp and dfp and sfp != dfp:
             ns_edges.add((sfp, dfp))
 
-    sorted_fps = _topo_sort(sorted(files.keys()), ns_edges)
+    # Also propagate namespace ordering from inheritance
+    for src, dst in inherit_edges:
+        sfp, dfp = cid_to_fp.get(src), cid_to_fp.get(dst)
+        if sfp and dfp and sfp != dfp:
+            ns_edges.add((sfp, dfp))
+
+    all_fps = sorted(files.keys())
+    sorted_fps = _topo_sort(all_fps, ns_edges)
+
+    # Deferred: namespaces with only removals and not called by others → last
+    in_count: dict[str, int] = defaultdict(int)
+    for _, to_f in ns_edges:
+        in_count[to_f] += 1
+    deferred = {
+        fp
+        for fp in files
+        if not any(files[fp][cn]["added"] or files[fp][cn]["modified"] for cn in files[fp])
+        and in_count[fp] == 0
+    }
+    sorted_fps = [fp for fp in sorted_fps if fp not in deferred] + sorted(deferred)
 
     # ── Emit namespaces in topo order ─────────────────────────────────────────
     for file_path in sorted_fps:
@@ -327,32 +364,39 @@ def render_mermaid(result: AnalysisResult, include_tests: bool = False) -> str:
         for cid in sorted_cids:
             if cid == _mod_id(file_path):
                 sa = changed.get(None, {"added": [], "modified": [], "removed": []})
-                all_fids = [fn.function_id for fn in sa["added"] + sa["modified"] + sa["removed"]]
+                live_fids = [fn.function_id for fn in sa["added"] + sa["modified"]]
                 cs = _class_style(
-                    all_fids, chain_map, _dominant(sa["added"], sa["modified"], sa["removed"])
+                    live_fids or [fn.function_id for fn in sa["removed"]],
+                    chain_map,
+                    _dominant(sa["added"], sa["modified"], sa["removed"]),
                 )
-                lines.append(f'        class {cid}["«standalone functions»"] {{')
-                lines.append("            <<standalone>>")
+                modpath = file_path.removesuffix(".py").replace("/", ".")
+                lines.append(f'        class {cid}["{modpath}"] {{')
                 for fn in sa["added"]:
                     lines.append(f"            {_added_line(fn)}")
                 for fn in sa["modified"]:
                     lines.append(f"            {_modified_line(fn)}")
-                for fn in sa["removed"]:
-                    lines.append(f"            {_removed_line(fn)}")
                 lines.append("        }")
                 style_cmds.append(f"    style {cid} {cs}")
+
+                # Removed standalone functions → separate <<deleted>> class box
+                if sa["removed"]:
+                    del_cid = f"{cid}__del"
+                    lines.append(f'        class {del_cid}["{modpath} (deleted)"] {{')
+                    lines.append("            <<deleted>>")
+                    for fn in sa["removed"]:
+                        lines.append(f"            {_removed_line(fn)}")
+                    lines.append("        }")
+                    style_cmds.append(f"    style {del_cid} {_S['removed']}")
             else:
                 # Reverse-lookup class_name from cid
                 class_name = next(
                     cn for cn in changed if cn is not None and _class_id(file_path, cn) == cid
                 )
                 members = changed[class_name]
-                all_fids = [
-                    fn.function_id
-                    for fn in members["added"] + members["modified"] + members["removed"]
-                ]
+                live_fids = [fn.function_id for fn in members["added"] + members["modified"]]
                 cs = _class_style(
-                    all_fids,
+                    live_fids or [fn.function_id for fn in members["removed"]],
                     chain_map,
                     _dominant(members["added"], members["modified"], members["removed"]),
                 )
@@ -361,10 +405,18 @@ def render_mermaid(result: AnalysisResult, include_tests: bool = False) -> str:
                     lines.append(f"            {_added_line(fn)}")
                 for fn in members["modified"]:
                     lines.append(f"            {_modified_line(fn)}")
-                for fn in members["removed"]:
-                    lines.append(f"            {_removed_line(fn)}")
                 lines.append("        }")
                 style_cmds.append(f"    style {cid} {cs}")
+
+                # Removed methods → separate <<deleted>> class box
+                if members["removed"]:
+                    del_cid = f"{cid}__del"
+                    lines.append(f'        class {del_cid}["{class_name} (deleted)"] {{')
+                    lines.append("            <<deleted>>")
+                    for fn in members["removed"]:
+                        lines.append(f"            {_removed_line(fn)}")
+                    lines.append("        }")
+                    style_cmds.append(f"    style {del_cid} {_S['removed']}")
 
         lines.append("    }")
 
@@ -373,11 +425,16 @@ def render_mermaid(result: AnalysisResult, include_tests: bool = False) -> str:
         lines.append("")
         lines.extend(style_cmds)
 
-    if edges or removed_edges:
+    # Call edges that are NOT also inheritance edges
+    call_edges = edges - {(s, d) for s, d in inherit_edges} - {(d, s) for d, s in inherit_edges}
+
+    if call_edges or removed_edges or inherit_edges:
         lines.append("")
         lines.append("    %% Relationships")
-        for src, dst in sorted(edges):
-            lines.append(f"    {src} --> {dst}")
+        for src, dst in sorted(inherit_edges):
+            lines.append(f"    {src} --|> {dst}")
+        for src, dst in sorted(call_edges):
+            lines.append(f"    {src} --> {dst} : calls")
         for src, dst in sorted(removed_edges - edges):
             lines.append(f"    {src} ..> {dst} : removed")
 
