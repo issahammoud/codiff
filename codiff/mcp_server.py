@@ -1,7 +1,7 @@
 """MCP server — exposes codiff's structural diff as a tool for coding agents.
 
 Run with:
-    codiff-mcp          (after `pip install codiff[mcp]`)
+    codiff-mcp          (after `pip install git+https://github.com/issahammoud/codiff.git`)
     python -m codiff.mcp_server
 
 Configure in Claude Code (.mcp.json in the project root):
@@ -40,44 +40,21 @@ base git reference.
 
 WHEN TO CALL
 Call this tool once when you are about to create a pull request — NOT after
-every file edit. Use format="mermaid" to get a Mermaid class diagram and
-embed it in the PR description so reviewers see the structural diff rendered
-as a UML diagram on GitHub.
+every file edit.
 
-HOW TO COMPARE MAIN VS THE CURRENT BRANCH
-Pass base_ref="main" and head_ref="HEAD" to compare the main branch against
-the tip of the current branch (ignoring any uncommitted changes):
+HOW TO USE
+Call with format="mermaid" and embed the returned string in the PR description.
+GitHub renders Mermaid natively — no plugin needed.
 
   codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")
 
-The returned Mermaid block should be included in the PR body, for example:
+Include it in the PR body like this:
 
   ## Structural diff
   <paste the returned string here>
 
-GitHub renders Mermaid natively — no plugin needed.
-
-READING THE TERMINAL OUTPUT
-Each changed file appears as a box. Methods of the same class are grouped in
-a dashed sub-box (╭╌╌╌ ClassName ╌╌╌╮). Deleted functions are collected in a
-red sub-box titled "deleted".
-
-Function indicators:
-  +  green   added      ~  yellow  modified      -  red  removed
-
-Annotations:
-  "entry point"   no callers — new public surface
-  "sig changed"   parameters or return type changed
-  "calls changed" now calls different functions
-  "body changed"  implementation changed, same signature
-
-CHAIN COLORS
-Functions in the same connected call chain share a color across all files.
-Magenta names = one chain, cyan = another. Trace a feature end-to-end at a glance.
-
-Arrows between file boxes are labeled: "calls ────▶" or "inherits ────▶".
-
-By default, test functions are excluded. Pass include_tests=True to show them.
+Pass include_deleted=True to also show removed functions in the diagram.
+By default, test functions and deleted functions are excluded.
 """
 
 
@@ -87,6 +64,7 @@ def codiff_diff(
     base_ref: str = "HEAD",
     head_ref: Optional[str] = None,
     include_tests: bool = False,
+    include_deleted: bool = False,
     format: str = "terminal",
 ) -> str:
     """Compute and render the structural call-graph diff.
@@ -115,10 +93,21 @@ def codiff_diff(
 
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
+
+    if not include_tests:
+        from codiff.utils.files import is_test_file
+
+        result.added = [fn for fn in result.added if not is_test_file(fn.file_path)]
+        result.modified = [fn for fn in result.modified if not is_test_file(fn.file_path)]
+        result.removed = [fn for fn in result.removed if not is_test_file(fn.file_path)]
+
+    if not include_deleted:
+        result.removed = []
+
     head_label = head_ref or "working tree"
 
     if format == "mermaid":
-        return render_mermaid(result, include_tests=include_tests)
+        return render_mermaid(result)
     if format == "json":
         return render_json(result, base_ref=base_ref, head_ref=head_label)
 

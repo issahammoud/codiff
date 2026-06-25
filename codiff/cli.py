@@ -55,6 +55,12 @@ def main():
         help="Include test functions in the diff output (hidden by default)",
     )
     diff_parser.add_argument(
+        "--include-deleted",
+        action="store_true",
+        default=False,
+        help="Include deleted functions in the diff output (hidden by default)",
+    )
+    diff_parser.add_argument(
         "--format",
         choices=["terminal", "mermaid", "json"],
         default="terminal",
@@ -107,6 +113,7 @@ def main():
             base_ref=args.base,
             head_ref=args.head,
             include_tests=args.include_tests,
+            include_deleted=args.include_deleted,
             fmt=args.format,
         )
 
@@ -154,6 +161,7 @@ def _run_diff(
     base_ref: str,
     head_ref: str | None = None,
     include_tests: bool = False,
+    include_deleted: bool = False,
     fmt: str = "terminal",
 ) -> None:
     from codiff.db import get_db_path
@@ -181,11 +189,21 @@ def _run_diff(
     graph_diff = diff_snapshots(base, head)
     result = analyze(graph_diff, base, head)
 
+    if not include_tests:
+        from codiff.utils.files import is_test_file
+
+        result.added = [fn for fn in result.added if not is_test_file(fn.file_path)]
+        result.modified = [fn for fn in result.modified if not is_test_file(fn.file_path)]
+        result.removed = [fn for fn in result.removed if not is_test_file(fn.file_path)]
+
+    if not include_deleted:
+        result.removed = []
+
     head_label = head_ref or "working tree"
     if fmt == "json":
         print(render_json(result, base_ref=base_ref, head_ref=head_label))
     elif fmt == "mermaid":
-        print(render_mermaid(result, include_tests=include_tests))
+        print(render_mermaid(result))
     else:
         render_terminal(result, base_ref=base_ref, head_ref=head_label, include_tests=include_tests)
 

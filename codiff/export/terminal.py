@@ -14,7 +14,6 @@ Color scheme
 """
 
 from collections import defaultdict
-from pathlib import Path
 from typing import Optional
 
 from rich.box import Box
@@ -157,7 +156,9 @@ def _display_name(fn: object) -> str:
 
 
 def _is_test(file_path: str) -> bool:
-    return any(part.startswith("test") for part in Path(file_path).parts)
+    from codiff.utils.files import is_test_file
+
+    return is_test_file(file_path)
 
 
 def _partition(items: list, *, test: bool) -> list:

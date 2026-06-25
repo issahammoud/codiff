@@ -14,8 +14,7 @@ codiff snapshots the Python call graph at two states (e.g. HEAD vs working tree)
 ## Installation
 
 ```bash
-pip install codiff          # CLI only
-pip install "codiff[mcp]"   # CLI + MCP server for coding agents
+pip install git+https://github.com/issahammoud/codiff.git
 ```
 
 ## Usage
@@ -24,12 +23,13 @@ pip install "codiff[mcp]"   # CLI + MCP server for coding agents
 
 ```bash
 codiff diff                          # diff HEAD vs working tree (terminal output)
-codiff diff --format mermaid         # output a Mermaid UML class diagram
+codiff diff --format mermaid         # output a Mermaid class diagram
 codiff diff --format json            # output structured JSON (for editor integrations)
 codiff diff --base main              # diff a specific base ref
 codiff diff --head <ref>             # diff two git refs directly
 codiff diff --repo /path/to/repo     # diff a different repo
 codiff diff --include-tests          # include test functions (hidden by default)
+codiff diff --include-deleted        # include deleted functions (hidden by default)
 ```
 
 ### Output formats
@@ -37,7 +37,7 @@ codiff diff --include-tests          # include test functions (hidden by default
 | Format | Description |
 |---|---|
 | `terminal` | Colored terminal output with UML-style boxes (default) |
-| `mermaid` | Mermaid `classDiagram` — paste into any Markdown file or PR description |
+| `mermaid` | Two Mermaid `classDiagram` blocks — paste into any Markdown file or PR description |
 | `json` | Structured JSON — consumed by editor integrations (e.g. the VS Code extension) |
 
 ### MCP integration (Claude Code)
@@ -50,7 +50,7 @@ codiff init --agent claude
 
 This writes `.mcp.json` into the project root, registering the `codiff-mcp` server. Restart Claude Code — the `codiff_diff` tool is then available to the agent.
 
-The agent calls `codiff_diff` at the end of every response that modifies files. The full colored output renders directly in your terminal, identical to `codiff diff`.
+When creating a pull request, call `codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")` to get a Mermaid diagram to embed in the PR description. GitHub renders it natively — no plugin needed.
 
 ## Reading the terminal output
 
@@ -58,7 +58,7 @@ The output shows one box per changed file. Boxes are laid out side by side when 
 
 ### Inside each file box
 
-Methods belonging to the same class are grouped into a **dashed sub-box** (╭╌╌╌ `ClassName` ╌╌╌╮). Standalone functions appear directly in the file box. Deleted functions are collected into a red **╭╌╌╌ deleted ╌╌╌╮** sub-box, always shown after additions and modifications.
+Methods belonging to the same class are grouped into a **dashed sub-box** (╭╌╌╌ `ClassName` ╌╌╌╮). Standalone functions appear directly in the file box. Deleted functions (only shown with `--include-deleted`) are collected into a red **╭╌╌╌ deleted ╌╌╌╮** sub-box.
 
 Functions are listed with an indicator and an annotation:
 
@@ -108,4 +108,18 @@ Labeled arrows appear between adjacent file boxes when there is a cross-file rel
 | `calls ────▶` | A function in the left file calls a function in the right file |
 | `inherits ────▶` | A class in the left file inherits from a class in the right file |
 
-Arrows are vertically centered between the two boxes. Files containing only deletions and not referenced by other changed files appear at the end of the output.
+## Reading the Mermaid output
+
+The Mermaid format produces **two diagrams**:
+
+1. **Connected modules** — files that have call or inheritance relationships with other changed files. Rendered with ELK layout left-to-right, with `calls` and `inherits` arrows between class boxes.
+
+2. **Isolated modules** — files with no cross-file relationships (e.g. migration files, config). Grouped by their top two folder levels into namespace clusters, rendered with Dagre left-to-right.
+
+Both diagrams use tinted color-coded class boxes:
+- **Green** — only additions
+- **Yellow** — modifications
+- **Red** — only deletions (requires `--include-deleted`)
+- **Tinted chain color** — all classes in the same connected call chain share a color
+
+The class box title shows the file path as a `«stereotype»` subtitle below the class name.

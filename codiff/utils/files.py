@@ -1,5 +1,35 @@
 import hashlib
 import os
+from pathlib import Path
+
+# Directories whose presence anywhere in a path marks the file as test code
+_TEST_DIRS = {"test", "tests", "testing", "spec", "specs", "__tests__", "e2e", "integration"}
+
+# File name suffixes that mark a file as test code (checked on the bare filename)
+_TEST_SUFFIXES = ("_test.py", "_tests.py", "_spec.py", "_specs.py")
+
+# Exact filenames that are always test/fixture infrastructure
+_TEST_NAMES = {"conftest.py", "setup_test.py"}
+
+
+def is_test_file(file_path: str) -> bool:
+    """Return True if *file_path* is a test/spec file by any common convention.
+
+    Covers:
+    - Any path segment matching a test directory name (tests/, spec/, e2e/, …)
+    - Any path segment starting with ``test`` (test_foo.py, testutils.py, …)
+    - Filenames ending with ``_test.py``, ``_spec.py``, etc.
+    - Exact filenames like conftest.py
+    """
+    parts = Path(file_path).parts
+    name = parts[-1] if parts else ""
+    dirs = parts[:-1]
+    return (
+        any(d.lower() in _TEST_DIRS or d.lower().startswith("test") for d in dirs)
+        or name.startswith("test")
+        or any(name.endswith(s) for s in _TEST_SUFFIXES)
+        or name in _TEST_NAMES
+    )
 
 
 def hash_file(path: str) -> str:
