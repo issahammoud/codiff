@@ -3,7 +3,7 @@
 parse_repository() is the single function callers use. It:
   1. Asks each registered parser to build its module-resolution dict
   2. Walks the repo and dispatches each file to the right parser by extension
-  3. Resolves inter-file call references
+  3. Resolves inter-file call references using each parser's own resolver
   4. Returns a ParsedRepository with all results
 
 Adding a new language means creating a new LanguageParser subclass and
@@ -15,9 +15,9 @@ import os
 from pathlib import Path
 from typing import NamedTuple
 
-from codiff.parsers.language_parser import LanguageParser
-from codiff.parsers.python_parser import PythonParser
-from codiff.resolvers import resolve_internal_calls
+from codiff.languages.parser import LanguageParser
+from codiff.languages.python.parser import PythonParser
+from codiff.languages.typescript.parser import TypeScriptParser, TypeScriptXParser
 from codiff.schema.parsing import ClassChunk, FunctionChunk
 from codiff.utils.files import is_venv_dir
 from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
@@ -25,7 +25,7 @@ from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
 logger = logging.getLogger(__name__)
 
 # Registry: add new LanguageParser subclasses here to support more languages
-_PARSERS: list[LanguageParser] = [PythonParser()]
+_PARSERS: list[LanguageParser] = [PythonParser(), TypeScriptParser(), TypeScriptXParser()]
 
 
 class ParsedRepository(NamedTuple):
@@ -46,32 +46,42 @@ def parse_repository(
 ) -> ParsedRepository:
     """Walk *repo_path*, parse every source file, resolve internal calls.
 
-    Delegates all language-specific work (module naming, package exports,
-    AST parsing) to the registered LanguageParser instances. Callers never
-    need to know which language they are working with.
+    Each registered parser handles its own file extension. Call resolution
+    runs per-language so that imports from different languages do not bleed
+    into each other's resolution context. modules_dict and package_exports
+    are merged across languages (they are keyed by module path, which is
+    unique per file).
     """
     repo = Path(repo_path)
     if gitignore is None:
         gitignore = load_gitignore(str(repo))
 
-    # Build combined module context from all registered parsers
+    # Build combined module context and package exports from all parsers.
+    # Merging is safe because each parser only registers its own file extensions.
     modules_dict: dict[str, str] = {}
     package_exports: dict[str, str] = {}
     for parser in _PARSERS:
         modules_dict.update(parser.build_modules_dict(repo, gitignore))
         package_exports.update(parser.build_package_exports(repo, gitignore))
 
-    # Extension → parser dispatch map
     ext_map: dict[str, LanguageParser] = {p.extension: p for p in _PARSERS}
 
-    # Shared exclude_dirs across all parsers
     all_exclude_dirs: set[str] = set()
     for parser in _PARSERS:
         all_exclude_dirs.update(parser.exclude_dirs)
 
-    functions_list: list[FunctionChunk] = []
-    classes_list: list[ClassChunk] = []
-    imports_dict: dict[str, str] = {}
+    # Bucket by resolver class, not by file extension.
+    # .ts and .tsx share the same TypeScriptCallResolver so they must be grouped
+    # together — otherwise a .tsx component that instantiates a .ts class won't
+    # find the class in the resolver's all_class_names and loses the edge.
+    # Imports are still kept per-language (not per-extension) to prevent Python
+    # alias names from bleeding into the TypeScript resolution context.
+    resolver_cls_map: dict[type, type] = {p.resolver_class: p.resolver_class for p in _PARSERS}
+    ext_to_resolver: dict[str, type] = {p.extension: p.resolver_class for p in _PARSERS}
+    resolver_funcs: dict[type, list[FunctionChunk]] = {rc: [] for rc in resolver_cls_map}
+    resolver_classes: dict[type, list[ClassChunk]] = {rc: [] for rc in resolver_cls_map}
+    resolver_imports: dict[type, dict[str, str]] = {rc: {} for rc in resolver_cls_map}
+
     module_docstrings: dict[str, str] = {}
     class_docstrings: dict[str, str] = {}
 
@@ -95,27 +105,32 @@ def parse_repository(
                 funcs, classes, imports, mod_doc = file_parser.parse_code(src, rel, modules_dict)
                 if mod_doc:
                     module_docstrings[rel] = mod_doc
-                functions_list.extend(funcs)
-                classes_list.extend(classes)
-                imports_dict.update(imports)
+                resolver_cls = ext_to_resolver[ext]
+                resolver_funcs[resolver_cls].extend(funcs)
+                resolver_classes[resolver_cls].extend(classes)
+                resolver_imports[resolver_cls].update(imports)
                 for cls in classes:
                     if cls.docstring:
                         class_docstrings[cls.name] = cls.docstring
             except Exception as exc:
                 logger.warning("Parse error %s: %s", rel, exc)
 
-    functions_list = resolve_internal_calls(
-        functions=functions_list,
-        classes=classes_list,
-        imports=imports_dict,
-        modules_dict=modules_dict,
-        package_exports=package_exports,
-        max_workers=max_workers,
-    )
+    # Resolve calls per resolver class (groups all extensions that share a resolver).
+    all_resolved_functions: list[FunctionChunk] = []
+    for resolver_cls, funcs in resolver_funcs.items():
+        if not funcs:
+            continue
+        classes = resolver_classes[resolver_cls]
+        imports = resolver_imports[resolver_cls]
+        resolver = resolver_cls(funcs, classes, imports, modules_dict, package_exports)
+        resolved = resolver.resolve_all_calls(max_workers=max_workers)
+        all_resolved_functions.extend(resolved)
+
+    all_classes = [cls for ext_classes in resolver_classes.values() for cls in ext_classes]
 
     return ParsedRepository(
-        functions=functions_list,
-        classes=classes_list,
+        functions=all_resolved_functions,
+        classes=all_classes,
         module_docstrings=module_docstrings,
         class_docstrings=class_docstrings,
         modules_dict=modules_dict,

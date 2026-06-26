@@ -80,7 +80,7 @@ def build_from_ref(repo_path: str, ref: str) -> GraphSnapshot:
 
 def build_from_path(repo_path: str) -> GraphSnapshot:
     """Parse the working tree at *repo_path* in memory and return a GraphSnapshot."""
-    from codiff.parsers import parse_repository
+    from codiff.languages import parse_repository
 
     parsed = parse_repository(repo_path)
 

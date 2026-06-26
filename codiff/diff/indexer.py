@@ -98,7 +98,7 @@ def _full_index(repo_path: str, db_path: str, ref: str, sha: str) -> None:
 
 def _write_snapshot(source_path: str, db_path: str, sha: str) -> None:
     """Parse *source_path* via parse_repository() and write results to *db_path*."""
-    from codiff.parsers import parse_repository
+    from codiff.languages import parse_repository
 
     engine = make_sync_engine(db_path)
     Base.metadata.create_all(engine)
