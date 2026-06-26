@@ -1,12 +1,15 @@
 """TypeScript and TSX parser implementations.
 
 Implements LanguageParser for TypeScript (.ts) and TSX (.tsx) using
-tree-sitter-typescript. Tracks function_declaration and class
-method_definition nodes; arrow functions and other expression forms
-are intentionally excluded for simplicity.
+tree-sitter-typescript. Captures function_declaration, method_definition,
+module-level arrow functions (const X = () => {}), factory-call consts
+(const X = create(...)), object-property arrow functions (Zustand/Redux
+patterns), and JSX component usage as function calls.
 """
 
+import json
 import os
+import re
 from pathlib import Path
 
 import tree_sitter_typescript as tsts
@@ -35,6 +38,15 @@ class TypeScriptParser(LanguageParser):
 
         return TypeScriptCallResolver
 
+    def __init__(self) -> None:
+        super().__init__()
+        # List of (alias_prefix, target_prefix) where target_prefix is a
+        # slash-separated path relative to the repo root (may be empty for root).
+        # Populated by build_modules_dict from tsconfig.json; defaults handle
+        # the common @/ and ~/ conventions when no tsconfig is present so that
+        # tests calling parse_code() directly still work.
+        self._path_aliases: list[tuple[str, str]] = [("@/", ""), ("~/", "")]
+
     # ------------------------------------------------------------------
     # Module resolution
     # ------------------------------------------------------------------
@@ -47,11 +59,93 @@ class TypeScriptParser(LanguageParser):
     def _is_package_init(self, filename: str) -> bool:
         return filename in ("index.ts", "index.tsx")
 
+    def build_modules_dict(self, repo_path: Path, gitignore=None) -> dict[str, str]:
+        self._path_aliases = self._load_path_aliases(repo_path)
+        return super().build_modules_dict(repo_path, gitignore)
+
     def build_package_exports(self, repo_path: Path, gitignore=None) -> dict[str, str]:
         return {}
 
     def _extra_exclude_dirs(self) -> set[str]:
         return {".next", ".nuxt", ".cache", ".turbo", "coverage", ".jest-cache"}
+
+    # ------------------------------------------------------------------
+    # tsconfig.json path-alias loading
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_tsconfig(text: str) -> dict:
+        """Parse JSONC: tsconfig allows // line comments, /* */ block comments,
+        and trailing commas — none of which are valid JSON."""
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        text = re.sub(r"//[^\n]*", "", text)
+        text = re.sub(r",(\s*[}\]])", r"\1", text)
+        return json.loads(text)
+
+    def _load_path_aliases(self, repo_path: Path) -> list[tuple[str, str]]:
+        """Scan all tsconfig*.json files under repo_path and return
+        (alias_prefix, target_prefix) pairs where target_prefix is a
+        slash-separated path relative to the repo root (empty = root).
+
+        Falls back to common @/ and ~/ conventions pointing at the repo root
+        when no tsconfig paths are found, which covers the majority of projects
+        that use default Vite/Next/Nuxt configs without explicit paths.
+        """
+        aliases: list[tuple[str, str]] = []
+        repo_abs = repo_path.resolve()
+
+        for root, dirs, files in os.walk(str(repo_path)):
+            dirs[:] = sorted(d for d in dirs if d not in self.exclude_dirs)
+            for fname in sorted(files):
+                if not (fname.startswith("tsconfig") and fname.endswith(".json")):
+                    continue
+                tsconfig_file = Path(root) / fname
+                try:
+                    raw = tsconfig_file.read_text(encoding="utf-8")
+                    data = self._parse_tsconfig(raw)
+                    compiler_opts = data.get("compilerOptions", {})
+                    paths = compiler_opts.get("paths", {})
+                    if not paths:
+                        continue
+                    base_url = compiler_opts.get("baseUrl", ".")
+                    tsconfig_dir = tsconfig_file.parent.resolve()
+                    base_abs = (tsconfig_dir / base_url).resolve()
+                    try:
+                        base_rel = base_abs.relative_to(repo_abs)
+                    except ValueError:
+                        continue  # base_url resolves outside the repo
+
+                    for pattern, targets in paths.items():
+                        if not targets:
+                            continue
+                        target = targets[0]
+                        if pattern.endswith("/*") and target.endswith("/*"):
+                            alias_prefix = pattern[:-1]  # "@/*" → "@/"
+                            target_sub = target[:-1]  # "src/*" → "src/"
+                            target_dir = os.path.normpath(str(base_rel / target_sub)).replace(
+                                "\\", "/"
+                            )
+                            if target_dir == ".":
+                                target_dir = ""
+                            elif not target_dir.endswith("/"):
+                                target_dir += "/"
+                            aliases.append((alias_prefix, target_dir))
+                        elif "*" not in pattern:
+                            # Exact alias: "#lib": ["./src/lib"]
+                            target_dir = os.path.normpath(str(base_rel / target)).replace("\\", "/")
+                            if target_dir == ".":
+                                target_dir = ""
+                            aliases.append((pattern, target_dir))
+                except Exception:
+                    continue
+
+        if not aliases:
+            # No tsconfig paths found — fall back to common root conventions.
+            # @/ is used by Vite, Vue CLI, Next.js, Create React App.
+            # ~/ is used by Nuxt and some Webpack setups.
+            aliases = [("@/", ""), ("~/", "")]
+
+        return aliases
 
     # ------------------------------------------------------------------
     # Query initialisation
@@ -75,6 +169,30 @@ class TypeScriptParser(LanguageParser):
                 parameters: (formal_parameters) @params
                 return_type: (type_annotation)? @return_type
                 body: (statement_block) @body
+              ) @function
+              (lexical_declaration
+                (variable_declarator
+                  name: (identifier) @func_name
+                  value: (arrow_function
+                    parameters: (formal_parameters)? @params
+                    body: (statement_block) @body
+                  )
+                )
+              ) @function
+              (lexical_declaration
+                (variable_declarator
+                  name: (identifier) @func_name
+                  value: (call_expression
+                    function: (identifier)
+                  )
+                )
+              ) @function
+              (pair
+                key: (property_identifier) @func_name
+                value: (arrow_function
+                  parameters: (formal_parameters)? @params
+                  body: (statement_block) @body
+                )
               ) @function
             ]
             """,
@@ -230,8 +348,24 @@ class TypeScriptParser(LanguageParser):
                 if ctor:
                     calls.append(ctor)
 
+            elif node.type in ("jsx_self_closing_element", "jsx_opening_element"):
+                name = self._parse_jsx_element_name(node)
+                # Emit unconditionally — HTML intrinsics (div, span…) won't be
+                # in any import dict so the resolver drops them silently.
+                if name:
+                    calls.append(name)
+
         walk(body_node)
         return calls
+
+    def _parse_jsx_element_name(self, node) -> str | None:
+        """Return the component name from a jsx_self_closing_element or jsx_opening_element."""
+        for child in node.children:
+            if child.type == "identifier":
+                return child.text.decode("utf-8")
+            if child.type == "member_expression":
+                return child.text.decode("utf-8")
+        return None
 
     def _parse_ts_call(self, call_node) -> str | None:
         """Extract the call target string from a call_expression node."""
@@ -419,6 +553,23 @@ class TypeScriptParser(LanguageParser):
     ) -> "str | None":
         """Resolve a TS import source string to a module path from all_modules."""
         source = source_str.strip("'\"")
+
+        # Check path aliases loaded from tsconfig.json (e.g. @/, ~/, #lib, …).
+        for alias_prefix, target_prefix in self._path_aliases:
+            if source.startswith(alias_prefix):
+                remainder = source[len(alias_prefix) :]
+                raw = target_prefix + remainder
+                normalized = os.path.normpath(raw).replace("\\", "/")
+                mod_key = os.path.splitext(normalized)[0].replace("/", ".")
+                if mod_key in all_modules:
+                    return all_modules[mod_key]
+                # Stem fallback within this alias
+                stem = Path(remainder).stem
+                for key, val in all_modules.items():
+                    if key.endswith("." + stem) or key == stem:
+                        return val
+                return None  # Matched alias but module not in codebase
+
         if not source.startswith("."):
             return None  # External npm package — not in codebase
 
@@ -426,24 +577,14 @@ class TypeScriptParser(LanguageParser):
             return None
 
         current_dir = Path(current_file).parent
-
-        # Try as a direct file reference (with known extensions)
-        for ext in (".ts", ".tsx"):
-            rel_candidate = str(Path(source).with_suffix(ext))
-            if rel_candidate.startswith("./"):
-                rel_candidate = rel_candidate[2:]
-            full_key_parts = str(current_dir / rel_candidate).replace("\\", "/")
-            mod_key = full_key_parts.replace("/", ".")
-            if mod_key in all_modules:
-                return all_modules[mod_key]
-
-        # Try without extension
-        full_key_parts = str(current_dir / source.lstrip("./")).replace("\\", "/")
-        mod_key = full_key_parts.replace("/", ".")
+        # Resolve relative to current file; normpath handles ./ and ../ correctly.
+        # Strip any extension (imports rarely include .ts but handle it defensively).
+        resolved = os.path.normpath(str(current_dir / source)).replace("\\", "/")
+        mod_key = os.path.splitext(resolved)[0].replace("/", ".")
         if mod_key in all_modules:
             return all_modules[mod_key]
 
-        # Last resort: search all_modules for a suffix match on the source stem
+        # Last resort: suffix match on stem (handles unusual path shapes)
         source_stem = Path(source).stem
         for key, val in all_modules.items():
             if key.endswith("." + source_stem) or key == source_stem:

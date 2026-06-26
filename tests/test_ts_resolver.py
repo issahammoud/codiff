@@ -327,6 +327,24 @@ class TestImportResolution:
         assert "console.log" not in resolved[0].calls
         assert "Math.max" not in resolved[0].calls
 
+    def test_cross_extension_class_visible_to_resolver(self):
+        """.tsx caller can resolve a .ts class when both are in the same resolver bucket.
+
+        Simulates the scenario fixed in code_parser.py: TypeScriptCallResolver now
+        receives both .ts and .tsx functions/classes so cross-extension edges aren't lost.
+        """
+        # UserService lives in a .ts file; Button lives in a .tsx file.
+        functions = [
+            make_func("render", file_path="Button.tsx", calls=["UserService"]),
+            make_func("constructor", file_path="UserService.ts", class_name="UserService"),
+        ]
+        classes = [make_class("UserService", file_path="UserService.ts")]
+        modules_dict = {"Button": "Button", "UserService": "UserService"}
+        imports = {"UserService": "UserService.UserService"}
+        resolved = resolve(functions, classes, imports=imports, modules_dict=modules_dict)
+        render = next(f for f in resolved if f.name == "render")
+        assert "UserService.UserService.constructor" in render.calls
+
 
 # ---------------------------------------------------------------------------
 # Internal call resolution

@@ -4,6 +4,8 @@ Structure mirrors test_code_parser.py so that Python and TypeScript
 parser behaviour can be compared side-by-side.
 """
 
+import json
+
 import pytest
 
 from codiff.parsers.typescript_parser import TypeScriptParser, TypeScriptXParser
@@ -406,6 +408,151 @@ function createAnimal(name: string): Animal {
 # ---------------------------------------------------------------------------
 # TSX parser
 # ---------------------------------------------------------------------------
+
+
+class TestImportResolution:
+    """Tests for _resolve_ts_import_source — the primary cross-file lookup path."""
+
+    def test_same_dir_relative_import(self, parser):
+        """'./utils' from 'src/app.ts' → 'src.utils'"""
+        all_modules = {"src.utils": "src.utils"}
+        result = parser._resolve_ts_import_source("'./utils'", "src/app.ts", all_modules)
+        assert result == "src.utils"
+
+    def test_parent_dir_relative_import(self, parser):
+        """'../api/user' from 'src/components/Button.ts' → 'src.api.user'"""
+        all_modules = {"src.api.user": "src.api.user"}
+        result = parser._resolve_ts_import_source(
+            "'../api/user'", "src/components/Button.ts", all_modules
+        )
+        assert result == "src.api.user"
+
+    def test_source_with_explicit_extension(self, parser):
+        """'./utils.ts' (explicit extension) resolves correctly."""
+        all_modules = {"src.utils": "src.utils"}
+        result = parser._resolve_ts_import_source("'./utils.ts'", "src/app.ts", all_modules)
+        assert result == "src.utils"
+
+    def test_at_alias_default_convention(self, parser):
+        """@/ with default fallback aliases (no tsconfig) resolves via sub-path lookup."""
+        all_modules = {
+            "stores.documentStore": "src.stores.documentStore",
+            "src.stores.documentStore": "src.stores.documentStore",
+        }
+        result = parser._resolve_ts_import_source(
+            "'@/stores/documentStore'", "src/views/Home.ts", all_modules
+        )
+        assert result == "src.stores.documentStore"
+
+    def test_at_alias_with_src_target(self, parser):
+        """@/ with target_prefix='src/' (as loaded from tsconfig @/*: [src/*])."""
+        parser._path_aliases = [("@/", "src/")]
+        all_modules = {"src.stores.documentStore": "src.stores.documentStore"}
+        result = parser._resolve_ts_import_source(
+            "'@/stores/documentStore'", "src/views/Home.ts", all_modules
+        )
+        assert result == "src.stores.documentStore"
+
+    def test_tilde_alias_resolves(self, parser):
+        """'~/utils/helpers' → the matching module (Nuxt ~/ alias)."""
+        all_modules = {
+            "utils.helpers": "src.utils.helpers",
+            "src.utils.helpers": "src.utils.helpers",
+        }
+        result = parser._resolve_ts_import_source(
+            "'~/utils/helpers'", "src/pages/index.ts", all_modules
+        )
+        assert result == "src.utils.helpers"
+
+    def test_custom_alias_from_tsconfig(self, parser):
+        """Custom alias loaded from tsconfig (e.g. #lib → src/lib)."""
+        parser._path_aliases = [("#lib/", "src/lib/")]
+        all_modules = {"src.lib.utils": "src.lib.utils"}
+        result = parser._resolve_ts_import_source("'#lib/utils'", "src/app.ts", all_modules)
+        assert result == "src.lib.utils"
+
+    def test_external_npm_package_returns_none(self, parser):
+        all_modules = {}
+        result = parser._resolve_ts_import_source("'react'", "src/app.ts", all_modules)
+        assert result is None
+
+    def test_alias_not_in_codebase_returns_none(self, parser):
+        """An @/ import that doesn't match any known module returns None."""
+        parser._path_aliases = [("@/", "src/")]
+        result = parser._resolve_ts_import_source("'@/nonexistent/module'", "src/app.ts", {})
+        assert result is None
+
+    def test_deep_parent_traversal(self, parser):
+        """'../../shared/types' from 'src/a/b/c.ts' → 'src.shared.types'"""
+        all_modules = {"src.shared.types": "src.shared.types"}
+        result = parser._resolve_ts_import_source(
+            "'../../shared/types'", "src/a/b/c.ts", all_modules
+        )
+        assert result == "src.shared.types"
+
+
+class TestTsconfigLoading:
+    """Tests for _load_path_aliases and _parse_tsconfig."""
+
+    def test_parse_tsconfig_strips_line_comments(self, parser):
+        raw = '{\n  // a comment\n  "compilerOptions": {}\n}'
+        data = parser._parse_tsconfig(raw)
+        assert data == {"compilerOptions": {}}
+
+    def test_parse_tsconfig_strips_block_comments(self, parser):
+        raw = '{ "compilerOptions": { /* block */ "baseUrl": "." } }'
+        data = parser._parse_tsconfig(raw)
+        assert data["compilerOptions"]["baseUrl"] == "."
+
+    def test_parse_tsconfig_strips_trailing_commas(self, parser):
+        raw = '{ "compilerOptions": { "baseUrl": ".", } }'
+        data = parser._parse_tsconfig(raw)
+        assert data["compilerOptions"]["baseUrl"] == "."
+
+    def test_load_path_aliases_reads_tsconfig(self, parser, tmp_path):
+        """_load_path_aliases reads compilerOptions.paths from tsconfig.json."""
+        tsconfig = {
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {
+                    "@/*": ["src/*"],
+                    "~/*": ["src/*"],
+                },
+            }
+        }
+        (tmp_path / "tsconfig.json").write_text(json.dumps(tsconfig))
+        # Create a dummy .ts file so build_modules_dict has something to index
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "app.ts").write_text("export function app() {}")
+
+        aliases = parser._load_path_aliases(tmp_path)
+        prefixes = {prefix for prefix, _ in aliases}
+        assert "@/" in prefixes
+        assert "~/" in prefixes
+        # Both should point at src/
+        for prefix, target in aliases:
+            if prefix in ("@/", "~/"):
+                assert "src" in target
+
+    def test_load_path_aliases_falls_back_when_no_tsconfig(self, parser, tmp_path):
+        """Without any tsconfig, falls back to @/ and ~/ → root."""
+        aliases = parser._load_path_aliases(tmp_path)
+        assert ("@/", "") in aliases
+        assert ("~/", "") in aliases
+
+    def test_load_path_aliases_custom_alias(self, parser, tmp_path):
+        """Custom alias like #lib/* is loaded correctly."""
+        tsconfig = {
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"#lib/*": ["./src/lib/*"]},
+            }
+        }
+        (tmp_path / "tsconfig.json").write_text(json.dumps(tsconfig))
+        aliases = parser._load_path_aliases(tmp_path)
+        prefixes = {prefix for prefix, _ in aliases}
+        assert "#lib/" in prefixes
 
 
 class TestTsxParser:

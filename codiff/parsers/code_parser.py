@@ -70,11 +70,17 @@ def parse_repository(
     for parser in _PARSERS:
         all_exclude_dirs.update(parser.exclude_dirs)
 
-    # Per-parser buckets — imports must be kept separate to avoid alias collisions
-    # across languages (e.g. a Python `import User` vs a TS `import { User }`).
-    parser_funcs: dict[str, list[FunctionChunk]] = {p.extension: [] for p in _PARSERS}
-    parser_classes: dict[str, list[ClassChunk]] = {p.extension: [] for p in _PARSERS}
-    parser_imports: dict[str, dict[str, str]] = {p.extension: {} for p in _PARSERS}
+    # Bucket by resolver class, not by file extension.
+    # .ts and .tsx share the same TypeScriptCallResolver so they must be grouped
+    # together — otherwise a .tsx component that instantiates a .ts class won't
+    # find the class in the resolver's all_class_names and loses the edge.
+    # Imports are still kept per-language (not per-extension) to prevent Python
+    # alias names from bleeding into the TypeScript resolution context.
+    resolver_cls_map: dict[type, type] = {p.resolver_class: p.resolver_class for p in _PARSERS}
+    ext_to_resolver: dict[str, type] = {p.extension: p.resolver_class for p in _PARSERS}
+    resolver_funcs: dict[type, list[FunctionChunk]] = {rc: [] for rc in resolver_cls_map}
+    resolver_classes: dict[type, list[ClassChunk]] = {rc: [] for rc in resolver_cls_map}
+    resolver_imports: dict[type, dict[str, str]] = {rc: {} for rc in resolver_cls_map}
 
     module_docstrings: dict[str, str] = {}
     class_docstrings: dict[str, str] = {}
@@ -99,30 +105,28 @@ def parse_repository(
                 funcs, classes, imports, mod_doc = file_parser.parse_code(src, rel, modules_dict)
                 if mod_doc:
                     module_docstrings[rel] = mod_doc
-                parser_funcs[ext].extend(funcs)
-                parser_classes[ext].extend(classes)
-                parser_imports[ext].update(imports)
+                resolver_cls = ext_to_resolver[ext]
+                resolver_funcs[resolver_cls].extend(funcs)
+                resolver_classes[resolver_cls].extend(classes)
+                resolver_imports[resolver_cls].update(imports)
                 for cls in classes:
                     if cls.docstring:
                         class_docstrings[cls.name] = cls.docstring
             except Exception as exc:
                 logger.warning("Parse error %s: %s", rel, exc)
 
-    # Resolve calls per-language using each parser's designated resolver class.
+    # Resolve calls per resolver class (groups all extensions that share a resolver).
     all_resolved_functions: list[FunctionChunk] = []
-    for parser in _PARSERS:
-        ext = parser.extension
-        funcs = parser_funcs[ext]
-        classes = parser_classes[ext]
-        imports = parser_imports[ext]
+    for resolver_cls, funcs in resolver_funcs.items():
         if not funcs:
             continue
-        resolver_cls = parser.resolver_class
+        classes = resolver_classes[resolver_cls]
+        imports = resolver_imports[resolver_cls]
         resolver = resolver_cls(funcs, classes, imports, modules_dict, package_exports)
         resolved = resolver.resolve_all_calls(max_workers=max_workers)
         all_resolved_functions.extend(resolved)
 
-    all_classes = [cls for ext_classes in parser_classes.values() for cls in ext_classes]
+    all_classes = [cls for ext_classes in resolver_classes.values() for cls in ext_classes]
 
     return ParsedRepository(
         functions=all_resolved_functions,
