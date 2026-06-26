@@ -5,8 +5,8 @@ specific edges appear in the resolved calls.  If any edge is missing, the test
 name tells you exactly which connection was lost.
 """
 
-from codiff.parsers.typescript_parser import TypeScriptParser, TypeScriptXParser
-from codiff.resolvers.typescript_resolver import TypeScriptCallResolver
+from codiff.languages.typescript.parser import TypeScriptParser, TypeScriptXParser
+from codiff.languages.typescript.resolver import TypeScriptCallResolver
 
 
 def _resolve(funcs, classes, imports, modules_dict):

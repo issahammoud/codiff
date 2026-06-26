@@ -17,7 +17,7 @@ def setup_repository(repo_path: str) -> str:
 
     Returns the repository UUID.
     """
-    from codiff.parsers import parse_repository
+    from codiff.languages import parse_repository
 
     repo_path = os.path.abspath(repo_path)
     if not os.path.isdir(repo_path):

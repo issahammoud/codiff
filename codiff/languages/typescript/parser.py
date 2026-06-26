@@ -15,7 +15,7 @@ from pathlib import Path
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Query
 
-from codiff.parsers.language_parser import LanguageParser
+from codiff.languages.language_parser import LanguageParser
 from codiff.schema.parsing import ClassChunk, FunctionChunk, Parameter
 
 
@@ -34,7 +34,7 @@ class TypeScriptParser(LanguageParser):
 
     @property
     def resolver_class(self):
-        from codiff.resolvers.typescript_resolver import TypeScriptCallResolver
+        from codiff.languages.typescript.resolver import TypeScriptCallResolver
 
         return TypeScriptCallResolver
 

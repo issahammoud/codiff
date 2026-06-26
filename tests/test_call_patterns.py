@@ -7,8 +7,7 @@ to ensure the call resolver handles all cases correctly.
 
 import pytest
 
-from codiff.parsers import CodeParser
-from codiff.resolvers import resolve_internal_calls
+from codiff.languages import CodeParser, resolve_internal_calls
 from codiff.schema.parsing import ClassChunk, FunctionChunk
 
 

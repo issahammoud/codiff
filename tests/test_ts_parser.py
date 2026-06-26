@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from codiff.parsers.typescript_parser import TypeScriptParser, TypeScriptXParser
+from codiff.languages.typescript.parser import TypeScriptParser, TypeScriptXParser
 
 
 @pytest.fixture

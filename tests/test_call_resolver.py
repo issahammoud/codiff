@@ -13,8 +13,7 @@ Tests cover:
 
 import pytest
 
-from codiff.parsers import CodeParser
-from codiff.resolvers import CallResolver, resolve_internal_calls
+from codiff.languages import CallResolver, CodeParser, resolve_internal_calls
 from codiff.schema.parsing import ClassChunk, FunctionChunk
 
 

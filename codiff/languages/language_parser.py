@@ -121,7 +121,7 @@ class LanguageParser(ABC):
         BaseCallResolver subclass. Default returns PythonCallResolver so
         that existing parsers keep working without changes.
         """
-        from codiff.resolvers import PythonCallResolver
+        from codiff.languages import PythonCallResolver
 
         return PythonCallResolver
 

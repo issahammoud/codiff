@@ -4,7 +4,7 @@ Structure mirrors test_call_resolver.py so that Python and TypeScript
 resolver behaviour can be compared side-by-side.
 """
 
-from codiff.resolvers.typescript_resolver import TypeScriptCallResolver
+from codiff.languages.typescript.resolver import TypeScriptCallResolver
 from codiff.schema.parsing import ClassChunk, FunctionChunk
 
 # ---------------------------------------------------------------------------

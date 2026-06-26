@@ -15,9 +15,9 @@ import os
 from pathlib import Path
 from typing import NamedTuple
 
-from codiff.parsers.language_parser import LanguageParser
-from codiff.parsers.python_parser import PythonParser
-from codiff.parsers.typescript_parser import TypeScriptParser, TypeScriptXParser
+from codiff.languages.language_parser import LanguageParser
+from codiff.languages.python.parser import PythonParser
+from codiff.languages.typescript.parser import TypeScriptParser, TypeScriptXParser
 from codiff.schema.parsing import ClassChunk, FunctionChunk
 from codiff.utils.files import is_venv_dir
 from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
