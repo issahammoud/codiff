@@ -8,7 +8,7 @@ TypeScriptCallResolver extends BaseCallResolver with:
 
 from typing import List
 
-from codiff.languages.base_resolver import BaseCallResolver
+from codiff.languages.resolver import BaseCallResolver
 
 
 class TypeScriptCallResolver(BaseCallResolver):

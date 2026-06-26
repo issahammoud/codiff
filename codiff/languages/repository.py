@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import NamedTuple
 
-from codiff.languages.language_parser import LanguageParser
+from codiff.languages.parser import LanguageParser
 from codiff.languages.python.parser import PythonParser
 from codiff.languages.typescript.parser import TypeScriptParser, TypeScriptXParser
 from codiff.schema.parsing import ClassChunk, FunctionChunk

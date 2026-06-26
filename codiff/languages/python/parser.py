@@ -11,7 +11,7 @@ from pathlib import Path
 import tree_sitter_python as tspython
 from tree_sitter import Language, Query
 
-from codiff.languages.language_parser import LanguageParser
+from codiff.languages.parser import LanguageParser
 from codiff.schema.parsing import ClassChunk, FunctionChunk, Parameter
 
 

@@ -11,7 +11,7 @@ backward compatibility and uses PythonCallResolver.
 
 from typing import Dict, List
 
-from codiff.languages.base_resolver import BaseCallResolver
+from codiff.languages.resolver import BaseCallResolver
 
 
 class PythonCallResolver(BaseCallResolver):
