@@ -92,7 +92,7 @@ def _full_index(repo_path: str, db_path: str, ref: str, sha: str) -> None:
     )
     with tempfile.TemporaryDirectory(prefix="codiff_base_") as tmpdir:
         with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tf:
-            tf.extractall(tmpdir)
+            tf.extractall(tmpdir, filter="data")
         _write_snapshot(tmpdir, db_path, sha)
 
 

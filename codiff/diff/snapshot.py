@@ -74,7 +74,7 @@ def build_from_ref(repo_path: str, ref: str) -> GraphSnapshot:
     )
     with tempfile.TemporaryDirectory(prefix="codiff_head_") as tmpdir:
         with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tf:
-            tf.extractall(tmpdir)
+            tf.extractall(tmpdir, filter="data")
         return build_from_path(tmpdir)
 
 
