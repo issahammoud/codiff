@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
@@ -23,7 +23,7 @@ class Repository(Base):
     is_parsed: Mapped[bool] = mapped_column(default=False)
     total_functions: Mapped[int] = mapped_column(Integer, default=0)
     total_classes: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     functions: Mapped[list["Function"]] = relationship(
         "Function",
@@ -64,7 +64,7 @@ class Function(Base):
     return_type: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     calls: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     repository: Mapped["Repository"] = relationship("Repository", back_populates="functions")
 
@@ -90,7 +90,7 @@ class Class(Base):
     decorators: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     superclasses: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     repository: Mapped["Repository"] = relationship("Repository", back_populates="classes")
 
@@ -102,4 +102,4 @@ class CommitMeta(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
-    indexed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    indexed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))

@@ -274,7 +274,7 @@ def render_mermaid(result: AnalysisResult) -> str:
     for fp, classes in files.items():
         for cn in classes:
             if cn is not None:
-                class_name_to_cid[cn] = _class_id(fp, cn)
+                class_name_to_cid[cn] = _sid(_class_id(fp, cn))
 
     inherit_edges: set[tuple[str, str]] = set()
     if result.class_parents:
@@ -287,7 +287,8 @@ def render_mermaid(result: AnalysisResult) -> str:
                 parent_name = parent_name.split("[")[0].strip()
                 parent_cid = class_name_to_cid.get(parent_name)
                 if parent_cid and parent_cid != child_cid:
-                    inherit_edges.add((child_cid, parent_cid))
+                    # Use short IDs — must match the remapped fn_to_cid/cid_to_fp
+                    inherit_edges.add((_sid(child_cid), _sid(parent_cid)))
 
     # ── Topo-sort namespaces (callers before callees) ────────────────────────
     ns_edges: set[tuple[str, str]] = set()

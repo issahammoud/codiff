@@ -28,3 +28,4 @@ venv/
 
 # Pytest
 .pytest_cache/
+.coverage

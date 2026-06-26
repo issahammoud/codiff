@@ -26,6 +26,7 @@ dev = [
     "ruff>=0.5.0",
     "mypy>=1.10.0",
     "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
     "sqlalchemy[mypy]>=2.0.25",
 ]
 
@@ -49,3 +50,8 @@ exclude = ["tests/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.1.0",
+]
