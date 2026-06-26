@@ -113,6 +113,18 @@ class LanguageParser(ABC):
         modules_dict.update(init_modules)
         return modules_dict
 
+    @property
+    def resolver_class(self):
+        """Resolver class to use for this language's functions.
+
+        Override in language-specific parsers to select the appropriate
+        BaseCallResolver subclass. Default returns PythonCallResolver so
+        that existing parsers keep working without changes.
+        """
+        from codiff.resolvers import PythonCallResolver
+
+        return PythonCallResolver
+
     def build_package_exports(self, repo_path: Path, gitignore=None) -> dict[str, str]:
         """Return a map of re-exported names to their real locations.
 

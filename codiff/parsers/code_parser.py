@@ -3,7 +3,7 @@
 parse_repository() is the single function callers use. It:
   1. Asks each registered parser to build its module-resolution dict
   2. Walks the repo and dispatches each file to the right parser by extension
-  3. Resolves inter-file call references
+  3. Resolves inter-file call references using each parser's own resolver
   4. Returns a ParsedRepository with all results
 
 Adding a new language means creating a new LanguageParser subclass and
@@ -17,7 +17,7 @@ from typing import NamedTuple
 
 from codiff.parsers.language_parser import LanguageParser
 from codiff.parsers.python_parser import PythonParser
-from codiff.resolvers import resolve_internal_calls
+from codiff.parsers.typescript_parser import TypeScriptParser, TypeScriptXParser
 from codiff.schema.parsing import ClassChunk, FunctionChunk
 from codiff.utils.files import is_venv_dir
 from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
@@ -25,7 +25,7 @@ from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
 logger = logging.getLogger(__name__)
 
 # Registry: add new LanguageParser subclasses here to support more languages
-_PARSERS: list[LanguageParser] = [PythonParser()]
+_PARSERS: list[LanguageParser] = [PythonParser(), TypeScriptParser(), TypeScriptXParser()]
 
 
 class ParsedRepository(NamedTuple):
@@ -46,32 +46,36 @@ def parse_repository(
 ) -> ParsedRepository:
     """Walk *repo_path*, parse every source file, resolve internal calls.
 
-    Delegates all language-specific work (module naming, package exports,
-    AST parsing) to the registered LanguageParser instances. Callers never
-    need to know which language they are working with.
+    Each registered parser handles its own file extension. Call resolution
+    runs per-language so that imports from different languages do not bleed
+    into each other's resolution context. modules_dict and package_exports
+    are merged across languages (they are keyed by module path, which is
+    unique per file).
     """
     repo = Path(repo_path)
     if gitignore is None:
         gitignore = load_gitignore(str(repo))
 
-    # Build combined module context from all registered parsers
+    # Build combined module context and package exports from all parsers.
+    # Merging is safe because each parser only registers its own file extensions.
     modules_dict: dict[str, str] = {}
     package_exports: dict[str, str] = {}
     for parser in _PARSERS:
         modules_dict.update(parser.build_modules_dict(repo, gitignore))
         package_exports.update(parser.build_package_exports(repo, gitignore))
 
-    # Extension → parser dispatch map
     ext_map: dict[str, LanguageParser] = {p.extension: p for p in _PARSERS}
 
-    # Shared exclude_dirs across all parsers
     all_exclude_dirs: set[str] = set()
     for parser in _PARSERS:
         all_exclude_dirs.update(parser.exclude_dirs)
 
-    functions_list: list[FunctionChunk] = []
-    classes_list: list[ClassChunk] = []
-    imports_dict: dict[str, str] = {}
+    # Per-parser buckets — imports must be kept separate to avoid alias collisions
+    # across languages (e.g. a Python `import User` vs a TS `import { User }`).
+    parser_funcs: dict[str, list[FunctionChunk]] = {p.extension: [] for p in _PARSERS}
+    parser_classes: dict[str, list[ClassChunk]] = {p.extension: [] for p in _PARSERS}
+    parser_imports: dict[str, dict[str, str]] = {p.extension: {} for p in _PARSERS}
+
     module_docstrings: dict[str, str] = {}
     class_docstrings: dict[str, str] = {}
 
@@ -95,27 +99,34 @@ def parse_repository(
                 funcs, classes, imports, mod_doc = file_parser.parse_code(src, rel, modules_dict)
                 if mod_doc:
                     module_docstrings[rel] = mod_doc
-                functions_list.extend(funcs)
-                classes_list.extend(classes)
-                imports_dict.update(imports)
+                parser_funcs[ext].extend(funcs)
+                parser_classes[ext].extend(classes)
+                parser_imports[ext].update(imports)
                 for cls in classes:
                     if cls.docstring:
                         class_docstrings[cls.name] = cls.docstring
             except Exception as exc:
                 logger.warning("Parse error %s: %s", rel, exc)
 
-    functions_list = resolve_internal_calls(
-        functions=functions_list,
-        classes=classes_list,
-        imports=imports_dict,
-        modules_dict=modules_dict,
-        package_exports=package_exports,
-        max_workers=max_workers,
-    )
+    # Resolve calls per-language using each parser's designated resolver class.
+    all_resolved_functions: list[FunctionChunk] = []
+    for parser in _PARSERS:
+        ext = parser.extension
+        funcs = parser_funcs[ext]
+        classes = parser_classes[ext]
+        imports = parser_imports[ext]
+        if not funcs:
+            continue
+        resolver_cls = parser.resolver_class
+        resolver = resolver_cls(funcs, classes, imports, modules_dict, package_exports)
+        resolved = resolver.resolve_all_calls(max_workers=max_workers)
+        all_resolved_functions.extend(resolved)
+
+    all_classes = [cls for ext_classes in parser_classes.values() for cls in ext_classes]
 
     return ParsedRepository(
-        functions=functions_list,
-        classes=classes_list,
+        functions=all_resolved_functions,
+        classes=all_classes,
         module_docstrings=module_docstrings,
         class_docstrings=class_docstrings,
         modules_dict=modules_dict,
