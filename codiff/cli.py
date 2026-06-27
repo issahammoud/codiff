@@ -4,6 +4,9 @@ import argparse
 import logging
 import os
 import sys
+import time
+
+_DEFAULT_WORKERS = max(1, (os.cpu_count() or 2) // 2)
 
 
 def main():
@@ -73,6 +76,19 @@ def main():
         metavar="PATH",
         help="Path to the repository root (default: current directory)",
     )
+    diff_parser.add_argument(
+        "--workers",
+        type=int,
+        default=_DEFAULT_WORKERS,
+        metavar="N",
+        help=f"Number of parallel workers for parsing and resolution (default: {_DEFAULT_WORKERS}, half of cpu count)",
+    )
+    diff_parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Show timing breakdown for each processing step (sets log level to DEBUG)",
+    )
 
     # init subcommand — configure a coding agent to use codiff
     init_parser = subparsers.add_parser(
@@ -95,7 +111,7 @@ def main():
 
     args = parser.parse_args()
 
-    level = logging.DEBUG if args.verbose >= 2 else logging.INFO
+    level = logging.DEBUG if (args.verbose >= 2 or getattr(args, "debug", False)) else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -115,6 +131,7 @@ def main():
             include_tests=args.include_tests,
             include_deleted=args.include_deleted,
             fmt=args.format,
+            max_workers=args.workers,
         )
 
     elif args.command == "init":
@@ -163,31 +180,64 @@ def _run_diff(
     include_tests: bool = False,
     include_deleted: bool = False,
     fmt: str = "terminal",
+    max_workers: int = _DEFAULT_WORKERS,
 ) -> None:
     from codiff.db import get_db_path
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import ensure_indexed
-    from codiff.diff.snapshot import build_from_path, build_from_ref, load_from_db
+    from codiff.diff.snapshot import build_from_ref, build_incremental_head, load_from_db
     from codiff.export import render_json, render_mermaid, render_terminal
 
+    log = logging.getLogger(__name__)
     repo_path = os.path.abspath(repo_path)
 
     if head_ref is not None:
-        # Both sides are git refs — use git archive for both, skip the DB.
-        logging.getLogger(__name__).info("Diffing %s → %s", base_ref, head_ref)
-        base = build_from_ref(repo_path, base_ref)
-        head = build_from_ref(repo_path, head_ref)
+        # Both sides are git refs — parse base in full, HEAD incrementally.
+        log.info("Diffing %s → %s", base_ref, head_ref)
+        t = time.perf_counter()
+        base = build_from_ref(repo_path, base_ref, max_workers=max_workers)
+        log.debug(
+            "[timing] parse base (%s): %.2fs  (%d nodes)",
+            base_ref,
+            time.perf_counter() - t,
+            len(base.nodes),
+        )
     else:
         # Head is the working tree — use the cached SQLite index for the base.
-        logging.getLogger(__name__).info("Ensuring base index for %s at %s", repo_path, base_ref)
-        ensure_indexed(repo_path, base_ref)
-        db = get_db_path(repo_path)
-        base = load_from_db(db)
-        head = build_from_path(repo_path)
+        log.info("Ensuring base index for %s at %s", repo_path, base_ref)
+        t = time.perf_counter()
+        ensure_indexed(repo_path, base_ref, max_workers=max_workers)
+        log.debug("[timing] ensure_indexed: %.2fs", time.perf_counter() - t)
 
+        db = get_db_path(repo_path)
+        t = time.perf_counter()
+        base = load_from_db(db)
+        log.debug(
+            "[timing] load_from_db: %.2fs  (%d nodes)", time.perf_counter() - t, len(base.nodes)
+        )
+
+    t = time.perf_counter()
+    head = build_incremental_head(repo_path, base, base_ref, head_ref, max_workers=max_workers)
+    log.debug(
+        "[timing] build_incremental_head: %.2fs  (%d nodes)",
+        time.perf_counter() - t,
+        len(head.nodes),
+    )
+
+    t = time.perf_counter()
     graph_diff = diff_snapshots(base, head)
+    log.debug(
+        "[timing] diff_snapshots: %.2fs  (+%d -%d ~%d)",
+        time.perf_counter() - t,
+        len(graph_diff.added_nodes),
+        len(graph_diff.removed_nodes),
+        len(graph_diff.modified_nodes),
+    )
+
+    t = time.perf_counter()
     result = analyze(graph_diff, base, head)
+    log.debug("[timing] analyze: %.2fs", time.perf_counter() - t)
 
     if not include_tests:
         from codiff.utils.files import is_test_file

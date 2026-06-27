@@ -11,6 +11,7 @@ live here: import resolution, internal resolution, variable method calls,
 return-type-based resolution, and the method-name fallback.
 """
 
+import math
 import os
 import threading
 from abc import ABC, abstractmethod
@@ -118,17 +119,23 @@ class BaseCallResolver(ABC):
     # Public entry point
     # ------------------------------------------------------------------
 
-    def resolve_all_calls(self, max_workers: int = 10) -> List:
-        resolved_functions = []
+    def resolve_all_calls(self, max_workers: int = 10, resolve_subset: List | None = None) -> List:
+        to_resolve = resolve_subset if resolve_subset is not None else self.functions
+        if not to_resolve:
+            return []
+        n_batches = max(1, max_workers * 4)
+        batch_size = math.ceil(len(to_resolve) / n_batches)
+        batches = [to_resolve[i : i + batch_size] for i in range(0, len(to_resolve), batch_size)]
+        resolved: List = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(self._resolve_function_calls, function)
-                for function in self.functions
-            ]
+            futures = [executor.submit(self._resolve_batch, batch) for batch in batches]
             for future in as_completed(futures):
-                resolved_functions.append(future.result())
-        self._resolve_decorator_calls(resolved_functions)
-        return resolved_functions
+                resolved.extend(future.result())
+        self._resolve_decorator_calls(resolved)
+        return resolved
+
+    def _resolve_batch(self, functions: List) -> List:
+        return [self._resolve_function_calls(f) for f in functions]
 
     # ------------------------------------------------------------------
     # Decorator resolution

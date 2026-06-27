@@ -30,6 +30,8 @@ codiff diff --head <ref>             # diff two git refs directly
 codiff diff --repo /path/to/repo     # diff a different repo
 codiff diff --include-tests          # include test functions (hidden by default)
 codiff diff --include-deleted        # include deleted functions (hidden by default)
+codiff diff --workers 8              # set parallel worker count (default: cpu_count // 2)
+codiff diff --debug                  # print timing breakdown for each processing step
 ```
 
 ### Output formats

@@ -53,7 +53,7 @@ def current_indexed_sha(db_path: str) -> str | None:
         engine.dispose()
 
 
-def ensure_indexed(repo_path: str, ref: str = "HEAD") -> str:
+def ensure_indexed(repo_path: str, ref: str = "HEAD", max_workers: int = 4) -> str:
     """Ensure .codiff.db is indexed at *ref*. Re-indexes only when the SHA changed.
 
     Returns the resolved commit SHA.
@@ -73,7 +73,7 @@ def ensure_indexed(repo_path: str, ref: str = "HEAD") -> str:
         sha[:8],
         current[:8] if current else "none",
     )
-    _full_index(repo_path, db, ref, sha)
+    _full_index(repo_path, db, ref, sha, max_workers=max_workers)
     return sha
 
 
@@ -82,7 +82,7 @@ def ensure_indexed(repo_path: str, ref: str = "HEAD") -> str:
 # ---------------------------------------------------------------------------
 
 
-def _full_index(repo_path: str, db_path: str, ref: str, sha: str) -> None:
+def _full_index(repo_path: str, db_path: str, ref: str, sha: str, max_workers: int = 4) -> None:
     """Extract the git ref to a tmpdir, parse it, write to DB."""
     proc = subprocess.run(
         ["git", "archive", ref, "--format=tar"],
@@ -93,10 +93,10 @@ def _full_index(repo_path: str, db_path: str, ref: str, sha: str) -> None:
     with tempfile.TemporaryDirectory(prefix="codiff_base_") as tmpdir:
         with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tf:
             tf.extractall(tmpdir, filter="data")
-        _write_snapshot(tmpdir, db_path, sha)
+        _write_snapshot(tmpdir, db_path, sha, max_workers=max_workers)
 
 
-def _write_snapshot(source_path: str, db_path: str, sha: str) -> None:
+def _write_snapshot(source_path: str, db_path: str, sha: str, max_workers: int = 4) -> None:
     """Parse *source_path* via parse_repository() and write results to *db_path*."""
     from codiff.languages import parse_repository
 
@@ -117,7 +117,7 @@ def _write_snapshot(source_path: str, db_path: str, sha: str) -> None:
         db.add(repo)
         db.commit()
 
-        parsed = parse_repository(source_path)
+        parsed = parse_repository(source_path, max_workers=max_workers)
 
         fn: "FunctionChunk"
         for fn in parsed.functions:
