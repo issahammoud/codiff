@@ -186,36 +186,25 @@ def _run_diff(
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import ensure_indexed
-    from codiff.diff.snapshot import build_from_ref, build_incremental_head, load_from_db
+    from codiff.diff.snapshot import build_incremental_head, load_from_db
     from codiff.export import render_json, render_mermaid, render_terminal
 
     log = logging.getLogger(__name__)
     repo_path = os.path.abspath(repo_path)
+    log.info("Diffing %s → %s", base_ref, head_ref or "working tree")
 
-    if head_ref is not None:
-        # Both sides are git refs — parse base in full, HEAD incrementally.
-        log.info("Diffing %s → %s", base_ref, head_ref)
-        t = time.perf_counter()
-        base = build_from_ref(repo_path, base_ref, max_workers=max_workers)
-        log.debug(
-            "[timing] parse base (%s): %.2fs  (%d nodes)",
-            base_ref,
-            time.perf_counter() - t,
-            len(base.nodes),
-        )
-    else:
-        # Head is the working tree — use the cached SQLite index for the base.
-        log.info("Ensuring base index for %s at %s", repo_path, base_ref)
-        t = time.perf_counter()
-        ensure_indexed(repo_path, base_ref, max_workers=max_workers)
-        log.debug("[timing] ensure_indexed: %.2fs", time.perf_counter() - t)
+    # Always use the DB cache for the base — regardless of whether head is a ref
+    # or the working tree. ensure_indexed resolves the ref to a SHA and skips
+    # re-indexing when the DB is already at that SHA, so subsequent runs with the
+    # same base are fast (~2s load) even in the two-refs case.
+    t = time.perf_counter()
+    ensure_indexed(repo_path, base_ref, max_workers=max_workers)
+    log.debug("[timing] ensure_indexed: %.2fs", time.perf_counter() - t)
 
-        db = get_db_path(repo_path)
-        t = time.perf_counter()
-        base = load_from_db(db)
-        log.debug(
-            "[timing] load_from_db: %.2fs  (%d nodes)", time.perf_counter() - t, len(base.nodes)
-        )
+    db = get_db_path(repo_path)
+    t = time.perf_counter()
+    base = load_from_db(db)
+    log.debug("[timing] load_from_db: %.2fs  (%d nodes)", time.perf_counter() - t, len(base.nodes))
 
     t = time.perf_counter()
     head = build_incremental_head(repo_path, base, base_ref, head_ref, max_workers=max_workers)

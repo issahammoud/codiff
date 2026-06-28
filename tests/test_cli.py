@@ -124,16 +124,18 @@ class TestRunDiff:
             _run_diff(str(tmp_path), "HEAD")
             mock_ensure.assert_called_once()
 
-    def test_two_ref_path_calls_build_from_ref_for_base(self, tmp_path):
+    def test_two_ref_path_uses_db_cache_for_base(self, tmp_path):
         with (
-            patch("codiff.diff.snapshot.build_from_ref", return_value=_fake_snap()) as mock_ref,
+            patch("codiff.diff.indexer.ensure_indexed") as mock_ensure,
+            patch("codiff.db.get_db_path", return_value=":memory:"),
+            patch("codiff.diff.snapshot.load_from_db", return_value=_fake_snap()),
             patch("codiff.diff.snapshot.build_incremental_head", return_value=_fake_snap()),
             patch("codiff.diff.differ.diff_snapshots", return_value=MagicMock()),
             patch("codiff.diff.analysis.analyze", return_value=_fake_result()),
             patch("codiff.export.render_terminal"),
         ):
             _run_diff(str(tmp_path), "v1", head_ref="v2")
-        assert mock_ref.call_count == 1
+        mock_ensure.assert_called_once()
 
     def test_fmt_json_prints_output(self, tmp_path, capsys):
         with (
