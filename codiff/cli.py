@@ -186,30 +186,42 @@ def _run_diff(
     from codiff.diff.analysis import analyze
     from codiff.diff.differ import diff_snapshots
     from codiff.diff.indexer import ensure_indexed
-    from codiff.diff.snapshot import build_incremental_head, load_from_db
+    from codiff.diff.snapshot import build_snapshot_incremental, load_from_db
     from codiff.export import render_json, render_mermaid, render_terminal
 
     log = logging.getLogger(__name__)
     repo_path = os.path.abspath(repo_path)
     log.info("Diffing %s → %s", base_ref, head_ref or "working tree")
 
-    # Always use the DB cache for the base — regardless of whether head is a ref
-    # or the working tree. ensure_indexed resolves the ref to a SHA and skips
-    # re-indexing when the DB is already at that SHA, so subsequent runs with the
-    # same base are fast (~2s load) even in the two-refs case.
+    # DB is anchored at HEAD. Both base and head snapshots are built incrementally
+    # from the DB using git diff, so only the changed files are re-parsed.
     t = time.perf_counter()
-    ensure_indexed(repo_path, base_ref, max_workers=max_workers)
+    db_sha = ensure_indexed(repo_path, "HEAD", max_workers=max_workers)
     log.debug("[timing] ensure_indexed: %.2fs", time.perf_counter() - t)
 
     db = get_db_path(repo_path)
     t = time.perf_counter()
-    base = load_from_db(db)
-    log.debug("[timing] load_from_db: %.2fs  (%d nodes)", time.perf_counter() - t, len(base.nodes))
+    db_snapshot = load_from_db(db)
+    log.debug(
+        "[timing] load_from_db: %.2fs  (%d nodes)", time.perf_counter() - t, len(db_snapshot.nodes)
+    )
 
     t = time.perf_counter()
-    head = build_incremental_head(repo_path, base, base_ref, head_ref, max_workers=max_workers)
+    base = build_snapshot_incremental(
+        repo_path, db_snapshot, db_sha, base_ref, max_workers=max_workers
+    )
     log.debug(
-        "[timing] build_incremental_head: %.2fs  (%d nodes)",
+        "[timing] build base snapshot: %.2fs  (%d nodes)",
+        time.perf_counter() - t,
+        len(base.nodes),
+    )
+
+    t = time.perf_counter()
+    head = build_snapshot_incremental(
+        repo_path, db_snapshot, db_sha, head_ref, max_workers=max_workers
+    )
+    log.debug(
+        "[timing] build head snapshot: %.2fs  (%d nodes)",
         time.perf_counter() - t,
         len(head.nodes),
     )

@@ -1,11 +1,12 @@
 """GraphSnapshot: a lightweight, in-memory view of a call graph.
 
 Loaders:
-- load_from_db(db_path)          — reads the indexed base commit from SQLite
-- build_from_path(repo_path)     — parses the working tree in memory (no DB writes)
-- build_from_ref(repo_path, ref) — parses a git ref in memory (no DB writes)
-- build_incremental_head(...)    — builds HEAD snapshot by re-parsing only changed
-                                   files, reusing the base snapshot for the rest
+- load_from_db(db_path)                     — reads the indexed base commit from SQLite
+- build_from_path(repo_path)                — parses the working tree in memory (no DB writes)
+- build_from_ref(repo_path, ref)            — parses a git ref in memory (no DB writes)
+- build_snapshot_incremental(...)           — builds a snapshot by re-parsing only changed
+                                              files relative to a DB anchor, reusing the DB
+                                              snapshot for everything else
 
 All loaders return a GraphSnapshot with the same structure.
 """
@@ -20,6 +21,7 @@ import time
 from sqlalchemy import create_engine
 from sqlalchemy.orm import load_only, sessionmaker
 
+from codiff.languages.repository import ParsedRepository
 from codiff.schema.diff import GraphSnapshot, NodeInfo
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,60 @@ def _chunk_to_node_info(chunk) -> NodeInfo:
     )
 
 
+def _parse_and_expand_stale(
+    parse_root: str,
+    files_to_parse: set[str],
+    old_ids_in_changed: set[str],
+    db_snapshot: GraphSnapshot,
+    node_stubs: list,
+    class_stubs: list,
+    max_workers: int,
+) -> tuple[ParsedRepository, set[str]]:
+    """Parse files_to_parse; if function IDs were deleted, expand to stale callers and re-parse.
+
+    Returns (fresh_parsed, final_files_to_parse).
+    """
+    from codiff.languages import parse_repository
+
+    fresh = parse_repository(
+        parse_root,
+        files_to_parse=files_to_parse,
+        extra_index_functions=node_stubs,
+        extra_index_classes=class_stubs,
+        max_workers=max_workers,
+    )
+
+    deleted_ids = old_ids_in_changed - {fn.id for fn in fresh.functions}
+    if not deleted_ids:
+        return fresh, files_to_parse
+
+    id_to_file = {nid: node.file_path for nid, node in db_snapshot.nodes.items()}
+    stale_files = {
+        id_to_file[caller_id]
+        for caller_id, callee_id in db_snapshot.edges
+        if callee_id in deleted_ids
+        and caller_id in id_to_file
+        and id_to_file[caller_id] not in files_to_parse
+    }
+    if not stale_files:
+        return fresh, files_to_parse
+
+    logger.info(
+        "Expanding to %d stale caller file(s) after %d deletion(s)",
+        len(stale_files),
+        len(deleted_ids),
+    )
+    expanded = files_to_parse | stale_files
+    fresh = parse_repository(
+        parse_root,
+        files_to_parse=expanded,
+        extra_index_functions=node_stubs,
+        extra_index_classes=class_stubs,
+        max_workers=max_workers,
+    )
+    return fresh, expanded
+
+
 # ---------------------------------------------------------------------------
 # Public loaders
 # ---------------------------------------------------------------------------
@@ -196,25 +252,23 @@ def build_from_path(repo_path: str, max_workers: int = 4) -> GraphSnapshot:
     return snapshot
 
 
-def build_incremental_head(
+def build_snapshot_incremental(
     repo_path: str,
-    base: GraphSnapshot,
-    base_ref: str,
-    head_ref: str | None,
+    db_snapshot: GraphSnapshot,
+    db_sha: str,
+    target_ref: str | None,
     max_workers: int = 4,
 ) -> GraphSnapshot:
-    """Build the HEAD snapshot by re-parsing only files changed since base_ref.
+    """Build a snapshot by re-parsing only files changed between db_sha and target_ref.
 
-    Unchanged files are taken directly from *base*, so parsing and resolution
-    scale with diff size rather than repo size.  Works whether *base* came from
-    the DB or was computed in memory.
+    Unchanged files are taken from db_snapshot. target_ref=None means the working tree.
 
-    *head_ref* = None means the working tree is HEAD.
+    When function IDs disappear in the changed files (rename, deletion), callers of
+    those IDs in unchanged files are included in the re-parse set so their call
+    references stay correct.
     """
-    from codiff.languages import parse_repository
-
     t = time.perf_counter()
-    changed_files = _git_changed_files(repo_path, base_ref, head_ref)
+    changed_files = _git_changed_files(repo_path, db_sha, target_ref)
     logger.debug(
         "[timing] git diff --name-only: %.2fs  (%d changed files)",
         time.perf_counter() - t,
@@ -223,22 +277,21 @@ def build_incremental_head(
 
     if not changed_files:
         logger.info(
-            "No changed files between %s and %s — HEAD equals base",
-            base_ref,
-            head_ref or "working tree",
+            "No changed files between %s and %s — snapshot equals DB",
+            db_sha[:8],
+            target_ref or "working tree",
         )
-        return base
+        return db_snapshot
 
     logger.info(
-        "Incremental HEAD: parsing %d changed file(s) out of ~%d base nodes",
+        "Incremental snapshot: %d changed file(s) out of ~%d base nodes",
         len(changed_files),
-        len(base.nodes),
+        len(db_snapshot.nodes),
     )
 
-    # Build stubs so the resolver can find calls INTO unchanged functions.
     t = time.perf_counter()
-    node_stubs = [_NodeStub(n) for n in base.nodes.values()]
-    class_stubs = [_ClassStub(cid, supers) for cid, supers in base.class_parents.items()]
+    node_stubs = [_NodeStub(n) for n in db_snapshot.nodes.values()]
+    class_stubs = [_ClassStub(cid, supers) for cid, supers in db_snapshot.class_parents.items()]
     logger.debug(
         "[timing] build stubs: %.2fs  (%d func, %d class)",
         time.perf_counter() - t,
@@ -246,56 +299,60 @@ def build_incremental_head(
         len(class_stubs),
     )
 
-    if head_ref is None:
-        # Working tree: read changed files directly from disk.
+    old_ids_in_changed: set[str] = {
+        nid for nid, node in db_snapshot.nodes.items() if node.file_path in changed_files
+    }
+
+    if target_ref is None:
         t = time.perf_counter()
-        fresh_parsed = parse_repository(
+        fresh_parsed, files_parsed = _parse_and_expand_stale(
             repo_path,
-            files_to_parse=changed_files,
-            extra_index_functions=node_stubs,
-            extra_index_classes=class_stubs,
-            max_workers=max_workers,
+            set(changed_files),
+            old_ids_in_changed,
+            db_snapshot,
+            node_stubs,
+            class_stubs,
+            max_workers,
         )
         logger.debug(
-            "[timing] parse+resolve changed files: %.2fs  (%d fresh functions)",
+            "[timing] parse+resolve: %.2fs  (%d fresh functions)",
             time.perf_counter() - t,
             len(fresh_parsed.functions),
         )
     else:
-        # Git ref: extract full repo to tmpdir (preserves module dict integrity),
-        # then parse only the changed files.
         t = time.perf_counter()
         proc = subprocess.run(
-            ["git", "archive", head_ref, "--format=tar"],
+            ["git", "archive", target_ref, "--format=tar"],
             cwd=repo_path,
             capture_output=True,
             check=True,
         )
-        with tempfile.TemporaryDirectory(prefix="codiff_head_") as tmpdir:
+        with tempfile.TemporaryDirectory(prefix="codiff_snap_") as tmpdir:
             with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tf:
                 tf.extractall(tmpdir, filter="data")
             logger.debug("[timing] git archive + extract: %.2fs", time.perf_counter() - t)
             t = time.perf_counter()
-            fresh_parsed = parse_repository(
+            fresh_parsed, files_parsed = _parse_and_expand_stale(
                 tmpdir,
-                files_to_parse=changed_files,
-                extra_index_functions=node_stubs,
-                extra_index_classes=class_stubs,
-                max_workers=max_workers,
+                set(changed_files),
+                old_ids_in_changed,
+                db_snapshot,
+                node_stubs,
+                class_stubs,
+                max_workers,
             )
             logger.debug(
-                "[timing] parse+resolve changed files: %.2fs  (%d fresh functions)",
+                "[timing] parse+resolve: %.2fs  (%d fresh functions)",
                 time.perf_counter() - t,
                 len(fresh_parsed.functions),
             )
 
-    # Assemble HEAD snapshot: base nodes for unchanged files + fresh nodes for changed files.
     t = time.perf_counter()
     snapshot = GraphSnapshot()
-    snapshot.class_parents = dict(base.class_parents)
+    snapshot.class_parents = dict(db_snapshot.class_parents)
 
-    for node in base.nodes.values():
-        if node.file_path not in changed_files:
+    for node in db_snapshot.nodes.values():
+        if node.file_path not in files_parsed:
             snapshot.nodes[node.function_id] = node
 
     for chunk in fresh_parsed.functions:
