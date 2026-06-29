@@ -22,7 +22,7 @@ from codiff.languages.python.parser import PythonParser
 from codiff.languages.typescript.parser import TypeScriptParser, TypeScriptXParser
 from codiff.schema.parsing import ClassChunk, FunctionChunk
 from codiff.utils.files import is_venv_dir
-from codiff.utils.gitignore_utils import is_dir_ignored, load_gitignore
+from codiff.utils.git import is_dir_ignored, load_gitignore
 
 logger = logging.getLogger(__name__)
 

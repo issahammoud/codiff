@@ -1,1 +1,1 @@
-"""codiff — structural call-graph diff for Python codebases."""
+"""codiff — structural call-graph diff for multi-language codebases."""

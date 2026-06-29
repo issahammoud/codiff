@@ -44,7 +44,7 @@ class PythonParser(LanguageParser):
         import os
 
         from codiff.utils.files import is_venv_dir
-        from codiff.utils.gitignore_utils import is_dir_ignored
+        from codiff.utils.git import is_dir_ignored
 
         package_exports: dict[str, str] = {}
         repo_str = str(repo_path)

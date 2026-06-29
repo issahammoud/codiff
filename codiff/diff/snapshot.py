@@ -18,9 +18,6 @@ import tarfile
 import tempfile
 import time
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import load_only, sessionmaker
-
 from codiff.languages.repository import ParsedRepository
 from codiff.schema.diff import GraphSnapshot, NodeInfo
 
@@ -173,52 +170,9 @@ def _parse_and_expand_stale(
 
 def load_from_db(db_path: str) -> GraphSnapshot:
     """Load the base snapshot from the indexed SQLite database."""
-    from codiff.db import Class as DbClass
-    from codiff.db import Function
+    from codiff.db.operations import load_snapshot
 
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
-    Session = sessionmaker(bind=engine)
-    db = Session()
-    snapshot = GraphSnapshot()
-
-    try:
-        for func in (
-            db.query(Function)
-            .options(
-                load_only(
-                    Function.function_id,
-                    Function.name,
-                    Function.file_path,
-                    Function.class_name,
-                    Function.code,
-                    Function.parameters,
-                    Function.return_type,
-                    Function.calls,
-                )
-            )
-            .all()
-        ):
-            snapshot.nodes[func.function_id] = NodeInfo(
-                function_id=func.function_id,
-                name=func.name,
-                file_path=func.file_path,
-                class_name=func.class_name,
-                parameters=list(func.parameters or []),  # type: ignore[arg-type]
-                return_type=func.return_type,
-                calls=func.calls or [],
-                code=func.code or "",
-            )
-        for cls in (
-            db.query(DbClass).options(load_only(DbClass.class_id, DbClass.superclasses)).all()
-        ):
-            if cls.superclasses:
-                snapshot.class_parents[cls.class_id] = list(cls.superclasses)
-    finally:
-        db.close()
-        engine.dispose()
-
-    _build_edges(snapshot)
-    return snapshot
+    return load_snapshot(db_path)
 
 
 def build_from_ref(repo_path: str, ref: str, max_workers: int = 4) -> GraphSnapshot:

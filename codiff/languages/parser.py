@@ -81,7 +81,7 @@ class LanguageParser(ABC):
         no language-specific logic here.
         """
         from codiff.utils.files import is_venv_dir
-        from codiff.utils.gitignore_utils import is_dir_ignored
+        from codiff.utils.git import is_dir_ignored
 
         modules_dict: dict[str, str] = {}
         init_modules: dict[str, str] = {}

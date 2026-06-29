@@ -1,5 +1,5 @@
 from codiff.utils.files import hash_file, is_path_in_venv, is_venv_dir
-from codiff.utils.gitignore_utils import is_dir_ignored, is_file_ignored, load_gitignore
+from codiff.utils.git import is_dir_ignored, is_file_ignored, load_gitignore
 
 
 class TestHashFile:

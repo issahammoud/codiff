@@ -12,7 +12,7 @@ _DEFAULT_WORKERS = max(1, (os.cpu_count() or 2) // 2)
 def main():
     parser = argparse.ArgumentParser(
         prog="codiff",
-        description="Structural diff of a Python codebase between two states",
+        description="Structural diff of a codebase between two states",
     )
     parser.add_argument(
         "-v",

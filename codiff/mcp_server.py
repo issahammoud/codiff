@@ -35,7 +35,7 @@ _render_mod.console = _console
 mcp = FastMCP("codiff")
 
 _DESCRIPTION = """\
-Show the structural call-graph diff of the current Python codebase against a
+Show the structural call-graph diff of the current codebase against a
 base git reference.
 
 WHEN TO CALL

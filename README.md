@@ -1,10 +1,19 @@
 # codiff
 
-A structural call-graph diff tool for Python codebases, built to work with coding agents. Instead of a line diff, it shows what changed at the function level — which functions were added and where they hook into existing code, which were modified, which were removed — with color-coded call chains consistent across files.
+A structural call-graph diff tool for multi-language codebases, built to work with coding agents. Instead of a line diff, it shows what changed at the function level — which functions were added and where they hook into existing code, which were modified, which were removed — with color-coded call chains consistent across files.
+
+## Supported languages
+
+| Language | Extensions |
+|---|---|
+| Python | `.py` |
+| TypeScript | `.ts`, `.tsx` |
 
 ## How it works
 
-codiff snapshots the Python call graph at two states (e.g. HEAD vs working tree), computes the node and edge delta, and derives structural facts: added/modified/removed functions. Every fact is computed deterministically from the resolved call graph — no LLM, no embeddings, fully offline.
+codiff maintains a SQLite call-graph index (`.codiff.db`) at the repo root. On first run it does a full parse; on subsequent runs it re-parses only the files changed since the last indexed commit, then detects stale callers (functions whose callees were renamed or deleted) and re-parses those too. Both the base and head snapshots are built incrementally from this index, so diffs stay fast even on large codebases.
+
+The graph delta — added, modified, removed functions — is computed deterministically from the resolved call graph. No LLM, no embeddings, fully offline.
 
 ## Requirements
 
@@ -44,7 +53,7 @@ codiff diff --debug                  # print timing breakdown for each processin
 
 ### MCP integration (Claude Code)
 
-Run once in any Python project you want to use codiff with:
+Run once in any project you want to use codiff with:
 
 ```bash
 codiff init --agent claude
