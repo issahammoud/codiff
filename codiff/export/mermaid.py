@@ -306,7 +306,7 @@ def render_mermaid(result: AnalysisResult) -> str:
     # Split files into connected (appear in at least one cross-file edge) and
     # isolated (no call/inheritance relationship with any other changed file).
     fps_in_edges: set[str] = set()
-    for src, dst in edges | inherit_edges:
+    for src, dst in edges | inherit_edges | removed_edges:
         sfp, dfp = cid_to_fp.get(src), cid_to_fp.get(dst)
         if sfp and dfp and sfp != dfp:
             fps_in_edges.add(sfp)
@@ -402,6 +402,10 @@ def render_mermaid(result: AnalysisResult) -> str:
         d1_body.append("")
         _emit_file(file_path, d1_body, d1_styles, d1_del, d1_del_styles)
 
+    # Snapshot before isolated files add their IDs — edges must only reference
+    # nodes that appear in diagram 1.
+    d1_emitted_ids = set(emitted_ids)
+
     # ── Diagram 2: isolated modules — direction TB, namespace-grouped ──────────
     d2_body: list[str] = []
     d2_styles: list[str] = []
@@ -418,7 +422,7 @@ def render_mermaid(result: AnalysisResult) -> str:
 
     # ── Build edge section (only for diagram 1 — isolated have no edges) ──────
     def _valid(s: str, d: str) -> bool:
-        return s in emitted_ids and d in emitted_ids
+        return s in d1_emitted_ids and d in d1_emitted_ids
 
     call_edges = {
         (s, d)
