@@ -203,13 +203,17 @@ def _init_windsurf(repo_path: str) -> None:
 
 
 def _init_gemini(repo_path: str) -> None:
-    """Gemini CLI: GEMINI.md (MCP config is global — manual setup required)"""
+    """Gemini CLI: global ~/.gemini/settings.json + GEMINI.md"""
     repo = Path(repo_path)
-    _write_instructions(repo / "GEMINI.md", "GEMINI.md", _INSTRUCTIONS_BLOCK)
-    print(
-        "\n  To enable MCP, add codiff-mcp to ~/.gemini/settings.json:\n"
-        '    {"mcpServers": {"codiff": {"command": "codiff-mcp"}}}\n'
+    _write_mcp_config(
+        Path.home() / ".gemini" / "settings.json",
+        "~/.gemini/settings.json",
+        "mcpServers",
+        "codiff",
+        {"command": "codiff-mcp"},
     )
+    _write_instructions(repo / "GEMINI.md", "GEMINI.md", _INSTRUCTIONS_BLOCK)
+    print("\n  Restart Gemini CLI to load the new MCP server.\n")
 
 
 _VIBE_SERVER_ENTRY: dict = {"name": "codiff", "transport": "stdio", "command": "codiff-mcp"}

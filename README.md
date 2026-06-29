@@ -134,11 +134,11 @@ Each command writes the MCP server config and a project instructions file tellin
 | `copilot` | `.vscode/mcp.json` | `.github/copilot-instructions.md` |
 | `codex` | `.codex/config.toml` | `AGENTS.md` |
 | `windsurf` | `~/.codeium/windsurf/mcp_config.json` ¹ | `.windsurfrules` |
-| `gemini` | — ² | `GEMINI.md` |
+| `gemini` | `~/.gemini/settings.json` ² | `GEMINI.md` |
 | `vibe` | `~/.vibe/config.toml` ³ | — |
 
 ¹ Windsurf MCP config is global (not project-scoped). Restart Windsurf after running.
-² Gemini CLI MCP config is global (`~/.gemini/settings.json`) — add `codiff-mcp` there manually.
+² Gemini CLI MCP config is global (not project-scoped). Restart Gemini CLI after running.
 ³ Mistral Vibe MCP config is global (not project-scoped). Restart Vibe after running.
 
 When creating a pull request, the agent calls `codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")` and embeds the returned diagram in the PR description. GitHub renders Mermaid natively — no plugin needed.
