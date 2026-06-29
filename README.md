@@ -112,6 +112,10 @@ pip install git+https://github.com/issahammoud/codiff.git
 ### CLI
 
 ```bash
+# Index a repository (writes .codiff.db — runs automatically on first diff)
+codiff index <path>
+
+# Diff
 codiff diff                          # diff HEAD vs working tree (terminal output)
 codiff diff --format mermaid         # output a Mermaid class diagram
 codiff diff --format json            # output structured JSON (for editor integrations)
@@ -122,6 +126,9 @@ codiff diff --include-tests          # include test functions (hidden by default
 codiff diff --include-deleted        # include deleted functions (hidden by default)
 codiff diff --workers 8              # set parallel worker count (default: cpu_count // 2)
 codiff diff --debug                  # print timing breakdown for each processing step
+
+# Configure a coding agent (see Agent integration below)
+codiff init --agent <agent>
 ```
 
 ### Output formats
@@ -132,17 +139,38 @@ codiff diff --debug                  # print timing breakdown for each processin
 | `mermaid` | Two Mermaid `classDiagram` blocks — paste into any Markdown file or PR description |
 | `json` | Structured JSON — consumed by editor integrations (e.g. the VS Code extension) |
 
-### MCP integration (Claude Code)
+### Agent integration (MCP + project instructions)
 
-Run once in any project you want to use codiff with:
+Run once per project to configure your coding agent:
 
 ```bash
-codiff init --agent claude
+codiff init --agent claude      # Claude Code
+codiff init --agent cursor      # Cursor
+codiff init --agent copilot     # GitHub Copilot (VS Code 1.99+)
+codiff init --agent codex       # OpenAI Codex CLI
+codiff init --agent windsurf    # Windsurf
+codiff init --agent gemini      # Gemini CLI
+codiff init --agent vibe        # Mistral Vibe
 ```
 
-This writes `.mcp.json` into the project root, registering the `codiff-mcp` server. Restart Claude Code — the `codiff_diff` tool is then available to the agent.
+Each command writes the MCP server config and a project instructions file telling the agent to use the `codiff_diff` MCP tool when creating pull requests:
 
-When creating a pull request, call `codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")` to get a Mermaid diagram to embed in the PR description. GitHub renders it natively — no plugin needed.
+| Agent | MCP config | Instructions file |
+|---|---|---|
+| `claude` | `.mcp.json` | `CLAUDE.md` |
+| `cursor` | `.cursor/mcp.json` | `.cursor/rules/codiff.mdc` |
+| `copilot` | `.vscode/mcp.json` | `.github/copilot-instructions.md` |
+| `codex` | — ¹ | `AGENTS.md` |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` ² | `.windsurfrules` |
+| `gemini` | — ³ | `GEMINI.md` |
+| `vibe` | `.vibe/config.toml` ⁴ | — |
+
+¹ OpenAI Codex CLI does not support MCP.
+² Windsurf MCP config is global (not project-scoped). Restart Windsurf after running.
+³ Gemini CLI MCP config is global (`~/.gemini/settings.json`) — add `codiff-mcp` there manually.
+⁴ Mistral Vibe uses a TOML config; no separate instructions file.
+
+When creating a pull request, the agent calls `codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")` and embeds the returned diagram in the PR description. GitHub renders Mermaid natively — no plugin needed.
 
 ## Reading the terminal output
 

@@ -1,0 +1,50 @@
+marker: "<!-- codiff -->"
+
+body: |
+  ## codiff — structural diff tool
+
+  codiff is available as an MCP tool (`codiff_diff`). Do NOT run `codiff diff`
+  as a shell command — always use the MCP tool so output is returned directly.
+
+  **When to use**
+
+  Call `codiff_diff` once when you are about to create a pull request — not
+  after every file edit.
+
+  **How to use**
+
+  Always call with `format="mermaid"` and embed the returned diagram in the PR
+  description. GitHub renders Mermaid natively — no plugin needed.
+
+  ```
+  codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")
+  ```
+
+  If the output is empty (no structural changes detected), omit the diagram from
+  the PR description entirely — do not include an empty code block.
+
+cursor:
+  description: Use codiff_diff before creating pull requests to show structural changes
+  alwaysApply: true
+
+mcp_description: |
+  Show the structural call-graph diff of the current codebase against a
+  base git reference.
+
+  WHEN TO CALL
+  Call this tool once when you are about to create a pull request — NOT after
+  every file edit.
+
+  HOW TO USE
+  Call with format="mermaid" and embed the returned string in the PR description.
+  GitHub renders Mermaid natively — no plugin needed.
+
+    codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")
+
+  Include it in the PR body like this:
+
+    ## Structural diff
+    <paste the returned string here>
+
+  Pass include_deleted=True to also show removed functions in the diagram.
+  By default, test functions and deleted functions are excluded.
