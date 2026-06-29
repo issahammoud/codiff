@@ -248,34 +248,51 @@ class TestInitVibe:
         monkeypatch.setenv("HOME", str(fake_home))
         return fake_home
 
+    def _load(self, path):
+        import tomllib
+
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+
     def test_creates_global_config_toml(self, tmp_path, monkeypatch):
         fake_home = self._setup(tmp_path, monkeypatch)
         _init_vibe(str(tmp_path))
-        content = (fake_home / ".vibe/config.toml").read_text()
-        assert "[[mcp_servers]]" in content
-        assert 'name = "codiff"' in content
-        assert 'transport = "stdio"' in content
-        assert 'command = "codiff-mcp"' in content
+        cfg = self._load(fake_home / ".vibe/config.toml")
+        assert len(cfg["mcp_servers"]) == 1
+        s = cfg["mcp_servers"][0]
+        assert s["name"] == "codiff"
+        assert s["transport"] == "stdio"
+        assert s["command"] == "codiff-mcp"
 
     def test_skips_if_already_registered(self, tmp_path, monkeypatch, capsys):
+        import tomli_w
+
         fake_home = self._setup(tmp_path, monkeypatch)
         config = fake_home / ".vibe/config.toml"
         config.parent.mkdir(parents=True)
-        original = '[[mcp_servers]]\nname = "codiff"\ntransport = "stdio"\ncommand = "codiff-mcp"\nargs = []\n'
-        config.write_text(original)
+        existing = {
+            "mcp_servers": [{"name": "codiff", "transport": "stdio", "command": "codiff-mcp"}]
+        }
+        with open(config, "wb") as f:
+            tomli_w.dump(existing, f)
         _init_vibe(str(tmp_path))
         assert "skipped" in capsys.readouterr().out
-        assert config.read_text() == original
+        cfg = self._load(config)
+        assert len(cfg["mcp_servers"]) == 1
 
-    def test_appends_to_existing_config(self, tmp_path, monkeypatch):
+    def test_merges_with_existing_config(self, tmp_path, monkeypatch):
+        import tomli_w
+
         fake_home = self._setup(tmp_path, monkeypatch)
         config = fake_home / ".vibe/config.toml"
         config.parent.mkdir(parents=True)
-        config.write_text('[model]\nname = "devstral"\n')
+        existing = {"model": {"name": "devstral"}}
+        with open(config, "wb") as f:
+            tomli_w.dump(existing, f)
         _init_vibe(str(tmp_path))
-        content = config.read_text()
-        assert 'name = "devstral"' in content
-        assert "[[mcp_servers]]" in content
+        cfg = self._load(config)
+        assert cfg["model"]["name"] == "devstral"
+        assert any(s["name"] == "codiff" for s in cfg["mcp_servers"])
 
     def test_handles_corrupt_toml(self, tmp_path, monkeypatch):
         fake_home = self._setup(tmp_path, monkeypatch)
@@ -283,8 +300,8 @@ class TestInitVibe:
         config.parent.mkdir(parents=True)
         config.write_text("NOT VALID TOML }{{\n")
         _init_vibe(str(tmp_path))
-        content = config.read_text()
-        assert "[[mcp_servers]]" in content
+        cfg = self._load(config)
+        assert any(s["name"] == "codiff" for s in cfg["mcp_servers"])
 
 
 class TestInitFileInspection:
