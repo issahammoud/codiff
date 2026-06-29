@@ -242,16 +242,24 @@ class TestInitGemini:
 
 
 class TestInitVibe:
-    def test_creates_config_toml(self, tmp_path):
+    def _setup(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        return fake_home
+
+    def test_creates_global_config_toml(self, tmp_path, monkeypatch):
+        fake_home = self._setup(tmp_path, monkeypatch)
         _init_vibe(str(tmp_path))
-        content = (tmp_path / ".vibe/config.toml").read_text()
+        content = (fake_home / ".vibe/config.toml").read_text()
         assert "[[mcp_servers]]" in content
         assert 'name = "codiff"' in content
         assert 'transport = "stdio"' in content
         assert 'command = "codiff-mcp"' in content
 
-    def test_skips_if_already_registered(self, tmp_path, capsys):
-        config = tmp_path / ".vibe/config.toml"
+    def test_skips_if_already_registered(self, tmp_path, monkeypatch, capsys):
+        fake_home = self._setup(tmp_path, monkeypatch)
+        config = fake_home / ".vibe/config.toml"
         config.parent.mkdir(parents=True)
         original = '[[mcp_servers]]\nname = "codiff"\ntransport = "stdio"\ncommand = "codiff-mcp"\nargs = []\n'
         config.write_text(original)
@@ -259,8 +267,9 @@ class TestInitVibe:
         assert "skipped" in capsys.readouterr().out
         assert config.read_text() == original
 
-    def test_appends_to_existing_config(self, tmp_path):
-        config = tmp_path / ".vibe/config.toml"
+    def test_appends_to_existing_config(self, tmp_path, monkeypatch):
+        fake_home = self._setup(tmp_path, monkeypatch)
+        config = fake_home / ".vibe/config.toml"
         config.parent.mkdir(parents=True)
         config.write_text('[model]\nname = "devstral"\n')
         _init_vibe(str(tmp_path))
@@ -268,8 +277,9 @@ class TestInitVibe:
         assert 'name = "devstral"' in content
         assert "[[mcp_servers]]" in content
 
-    def test_handles_corrupt_toml(self, tmp_path):
-        config = tmp_path / ".vibe/config.toml"
+    def test_handles_corrupt_toml(self, tmp_path, monkeypatch):
+        fake_home = self._setup(tmp_path, monkeypatch)
+        config = fake_home / ".vibe/config.toml"
         config.parent.mkdir(parents=True)
         config.write_text("NOT VALID TOML }{{\n")
         _init_vibe(str(tmp_path))
@@ -376,11 +386,12 @@ class TestInitFileInspection:
         assert "codiff_diff" in text
         assert 'format="mermaid"' in text
 
-    def test_vibe_config_toml(self, tmp_path):
+    def test_vibe_config_toml(self, tmp_path, monkeypatch):
         import tomllib
 
-        _init_vibe(str(tmp_path))
-        with open(tmp_path / ".vibe/config.toml", "rb") as f:
+        fake_home, repo = self._setup(tmp_path, monkeypatch)
+        _init_vibe(str(repo))
+        with open(fake_home / ".vibe/config.toml", "rb") as f:
             cfg = tomllib.load(f)
         assert len(cfg["mcp_servers"]) == 1
         server = cfg["mcp_servers"][0]
@@ -405,7 +416,7 @@ class TestInitFileInspection:
             repo / "AGENTS.md",
             repo / ".windsurfrules",
             repo / "GEMINI.md",
-            repo / ".vibe/config.toml",
+            fake_home / ".vibe/config.toml",
             fake_home / ".codeium/windsurf/mcp_config.json",
         }
         snapshots = {p: p.read_text() for p in tracked}
@@ -433,7 +444,7 @@ class TestRunInit:
             ("codex", "AGENTS.md", tmp_path),
             ("windsurf", ".codeium/windsurf/mcp_config.json", fake_home),
             ("gemini", "GEMINI.md", tmp_path),
-            ("vibe", ".vibe/config.toml", tmp_path),
+            ("vibe", ".vibe/config.toml", fake_home),
         ]:
             _run_init(str(tmp_path), agent)
             assert (base / expected_file).exists(), f"missing {expected_file} for {agent}"
@@ -485,12 +496,15 @@ class TestMainInit:
             main()
         assert (tmp_path / "GEMINI.md").exists()
 
-    def test_dispatches_to_init_vibe(self, tmp_path):
+    def test_dispatches_to_init_vibe(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
         with patch.object(
             sys, "argv", ["codiff", "init", "--agent", "vibe", "--repo", str(tmp_path)]
         ):
             main()
-        assert (tmp_path / ".vibe/config.toml").exists()
+        assert (fake_home / ".vibe/config.toml").exists()
 
 
 class TestMainIndex:

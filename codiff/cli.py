@@ -218,15 +218,16 @@ _VIBE_TOML_ENTRY = (
 
 
 def _init_vibe(repo_path: str) -> None:
-    """Mistral Vibe: .vibe/config.toml with [[mcp_servers]] array entry.
+    """Mistral Vibe: global ~/.vibe/config.toml with [[mcp_servers]] array entry.
 
     Vibe has no separate instructions file — MCP registration is sufficient.
+    Project-level .vibe/config.toml exists but requires explicit directory trust;
+    the global file is used by default and works without any extra setup.
     """
     import tomllib
 
-    repo = Path(repo_path)
-    config_path = repo / ".vibe" / "config.toml"
-    label = ".vibe/config.toml"
+    config_path = Path.home() / ".vibe" / "config.toml"
+    label = "~/.vibe/config.toml"
 
     if config_path.exists():
         try:
