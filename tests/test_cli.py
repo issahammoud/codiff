@@ -139,6 +139,29 @@ class TestInitCopilot:
 
 
 class TestInitCodex:
+    def test_creates_toml_config(self, tmp_path):
+        _init_codex(str(tmp_path))
+        content = (tmp_path / ".codex" / "config.toml").read_text()
+        assert "[mcp_servers.codiff]" in content
+        assert 'command = "codiff-mcp"' in content
+
+    def test_skips_toml_if_already_registered(self, tmp_path, capsys):
+        config = tmp_path / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text('[mcp_servers.codiff]\ncommand = "codiff-mcp"\n')
+        _init_codex(str(tmp_path))
+        assert "skipped" in capsys.readouterr().out
+        assert config.read_text().count("[mcp_servers.codiff]") == 1
+
+    def test_merges_with_existing_toml(self, tmp_path):
+        config = tmp_path / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text('[mcp_servers.other]\ncommand = "other"\n')
+        _init_codex(str(tmp_path))
+        content = config.read_text()
+        assert "[mcp_servers.codiff]" in content
+        assert "[mcp_servers.other]" in content
+
     def test_creates_agents_md(self, tmp_path):
         _init_codex(str(tmp_path))
         content = (tmp_path / "AGENTS.md").read_text()
@@ -152,7 +175,7 @@ class TestInitCodex:
         assert "Existing" in content
         assert "codiff_diff" in content
 
-    def test_skips_if_marker_present(self, tmp_path, capsys):
+    def test_skips_agents_md_if_marker_present(self, tmp_path, capsys):
         (tmp_path / "AGENTS.md").write_text("<!-- codiff -->\nAlready here.\n")
         _init_codex(str(tmp_path))
         assert "skipped" in capsys.readouterr().out
@@ -313,12 +336,24 @@ class TestInitFileInspection:
         assert "codiff_diff" in text
         assert 'format="mermaid"' in text
 
+    def test_codex_toml_config(self, tmp_path):
+        _init_codex(str(tmp_path))
+        text = (tmp_path / ".codex" / "config.toml").read_text()
+        assert "[mcp_servers.codiff]" in text
+        assert 'command = "codiff-mcp"' in text
+
     def test_codex_agents_md(self, tmp_path):
         _init_codex(str(tmp_path))
         text = (tmp_path / "AGENTS.md").read_text()
         assert "<!-- codiff -->" in text
         assert "codiff_diff" in text
         assert 'format="mermaid"' in text
+
+    def test_codex_idempotent(self, tmp_path):
+        _init_codex(str(tmp_path))
+        _init_codex(str(tmp_path))
+        assert (tmp_path / ".codex" / "config.toml").read_text().count("[mcp_servers.codiff]") == 1
+        assert (tmp_path / "AGENTS.md").read_text().count("<!-- codiff -->") == 1
 
     def test_windsurf_global_mcp(self, tmp_path, monkeypatch):
         fake_home, repo = self._setup(tmp_path, monkeypatch)

@@ -150,9 +150,38 @@ def _init_copilot(repo_path: str) -> None:
     print("\n  Reload the VS Code window to activate the MCP server (requires VS Code 1.99+).\n")
 
 
+_CODEX_TOML_ENTRY = '[mcp_servers.codiff]\ncommand = "codiff-mcp"\n'
+
+
 def _init_codex(repo_path: str) -> None:
-    """OpenAI Codex CLI: AGENTS.md (no MCP support)"""
+    """OpenAI Codex CLI: .codex/config.toml + AGENTS.md"""
+    import tomllib
+
     repo = Path(repo_path)
+    config_path = repo / ".codex" / "config.toml"
+    label = ".codex/config.toml"
+
+    if config_path.exists():
+        try:
+            with open(config_path, "rb") as f:
+                cfg = tomllib.load(f)
+            if "codiff" in cfg.get("mcp_servers", {}):
+                print(f"  ~ {label:<30} codiff MCP already registered, skipped")
+            else:
+                config_path.write_text(
+                    config_path.read_text().rstrip("\n") + "\n\n" + _CODEX_TOML_ENTRY
+                )
+                print(f"  + {label:<30} registered codiff-mcp server")
+        except Exception:
+            config_path.write_text(
+                config_path.read_text().rstrip("\n") + "\n\n" + _CODEX_TOML_ENTRY
+            )
+            print(f"  + {label:<30} registered codiff-mcp server")
+    else:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(_CODEX_TOML_ENTRY)
+        print(f"  + {label:<30} registered codiff-mcp server")
+
     _write_instructions(repo / "AGENTS.md", "AGENTS.md", _INSTRUCTIONS_BLOCK)
     print()
 

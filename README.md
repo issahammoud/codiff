@@ -132,15 +132,14 @@ Each command writes the MCP server config and a project instructions file tellin
 | `claude` | `.mcp.json` | `CLAUDE.md` |
 | `cursor` | `.cursor/mcp.json` | `.cursor/rules/codiff.mdc` |
 | `copilot` | `.vscode/mcp.json` | `.github/copilot-instructions.md` |
-| `codex` | — ¹ | `AGENTS.md` |
-| `windsurf` | `~/.codeium/windsurf/mcp_config.json` ² | `.windsurfrules` |
-| `gemini` | — ³ | `GEMINI.md` |
-| `vibe` | `.vibe/config.toml` ⁴ | — |
+| `codex` | `.codex/config.toml` | `AGENTS.md` |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` ¹ | `.windsurfrules` |
+| `gemini` | — ² | `GEMINI.md` |
+| `vibe` | `.vibe/config.toml` ³ | — |
 
-¹ OpenAI Codex CLI does not support MCP.
-² Windsurf MCP config is global (not project-scoped). Restart Windsurf after running.
-³ Gemini CLI MCP config is global (`~/.gemini/settings.json`) — add `codiff-mcp` there manually.
-⁴ Mistral Vibe uses a TOML config; no separate instructions file.
+¹ Windsurf MCP config is global (not project-scoped). Restart Windsurf after running.
+² Gemini CLI MCP config is global (`~/.gemini/settings.json`) — add `codiff-mcp` there manually.
+³ Mistral Vibe uses a TOML config; no separate instructions file.
 
 When creating a pull request, the agent calls `codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")` and embeds the returned diagram in the PR description. GitHub renders Mermaid natively — no plugin needed.
 
