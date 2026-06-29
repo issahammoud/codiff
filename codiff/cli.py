@@ -212,39 +212,47 @@ def _init_gemini(repo_path: str) -> None:
     )
 
 
-_VIBE_TOML_ENTRY = (
-    '[[mcp_servers]]\nname = "codiff"\ntransport = "stdio"\ncommand = "codiff-mcp"\nargs = []\n'
-)
+_VIBE_SERVER_ENTRY: dict = {"name": "codiff", "transport": "stdio", "command": "codiff-mcp"}
 
 
 def _init_vibe(repo_path: str) -> None:
-    """Mistral Vibe: .vibe/config.toml with [[mcp_servers]] array entry.
+    """Mistral Vibe: global ~/.vibe/config.toml with [[mcp_servers]] array entry.
 
     Vibe has no separate instructions file — MCP registration is sufficient.
+    Project-level .vibe/config.toml exists but requires explicit directory trust;
+    the global file is used by default and works without any extra setup.
+
+    Vibe writes its config via tomli_w.dump() (the whole dict), so we must
+    round-trip the same way — reading with tomllib and writing with tomli_w —
+    to avoid TOML "cannot mutate immutable namespace" conflicts when the existing
+    file uses inline-array syntax for mcp_servers.
     """
     import tomllib
 
-    repo = Path(repo_path)
-    config_path = repo / ".vibe" / "config.toml"
-    label = ".vibe/config.toml"
+    import tomli_w
 
+    config_path = Path.home() / ".vibe" / "config.toml"
+    label = "~/.vibe/config.toml"
+
+    cfg: dict = {}
     if config_path.exists():
         try:
             with open(config_path, "rb") as f:
                 cfg = tomllib.load(f)
-            servers = cfg.get("mcp_servers", [])
-            if any(s.get("name") == "codiff" for s in servers):
-                print(f"  ~ {label:<30} codiff MCP already registered, skipped")
-                print()
-                return
         except Exception:
-            pass
-        config_path.write_text(config_path.read_text().rstrip("\n") + "\n\n" + _VIBE_TOML_ENTRY)
-        print(f"  + {label:<30} registered codiff-mcp server")
-    else:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(_VIBE_TOML_ENTRY)
-        print(f"  + {label:<30} created with codiff-mcp server")
+            cfg = {}
+
+    servers: list = cfg.get("mcp_servers", []) if isinstance(cfg.get("mcp_servers"), list) else []
+    if any(isinstance(s, dict) and s.get("name") == "codiff" for s in servers):
+        print(f"  ~ {label:<30} codiff MCP already registered, skipped")
+        print()
+        return
+
+    cfg["mcp_servers"] = servers + [_VIBE_SERVER_ENTRY]
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "wb") as f:
+        tomli_w.dump(cfg, f)
+    print(f"  + {label:<30} registered codiff-mcp server")
 
     print("\n  Restart Vibe to load the new MCP server.\n")
 
