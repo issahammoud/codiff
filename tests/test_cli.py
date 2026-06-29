@@ -5,11 +5,8 @@ from unittest.mock import MagicMock, patch
 from codiff.cli import (
     _init_claude,
     _init_codex,
-    _init_copilot,
-    _init_cursor,
     _init_gemini,
     _init_vibe,
-    _init_windsurf,
     _run_diff,
     _run_init,
     main,
@@ -78,66 +75,6 @@ class TestInitClaude:
         assert (tmp_path / "CLAUDE.md").read_text() == "<!-- codiff -->\nAlready here.\n"
 
 
-class TestInitCursor:
-    def test_creates_mcp_json(self, tmp_path):
-        _init_cursor(str(tmp_path))
-        config = json.loads((tmp_path / ".cursor/mcp.json").read_text())
-        assert config["mcpServers"]["codiff"] == {"command": "codiff-mcp"}
-
-    def test_creates_rules_file(self, tmp_path):
-        _init_cursor(str(tmp_path))
-        mdc = (tmp_path / ".cursor/rules/codiff.mdc").read_text()
-        assert "alwaysApply: true" in mdc
-        assert "codiff_diff" in mdc
-
-    def test_skips_rules_if_exists(self, tmp_path, capsys):
-        rules = tmp_path / ".cursor/rules/codiff.mdc"
-        rules.parent.mkdir(parents=True)
-        rules.write_text("existing content\n")
-        _init_cursor(str(tmp_path))
-        assert "skipped" in capsys.readouterr().out
-        assert rules.read_text() == "existing content\n"
-
-    def test_merges_existing_mcp_json(self, tmp_path):
-        mcp = tmp_path / ".cursor/mcp.json"
-        mcp.parent.mkdir(parents=True)
-        mcp.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
-        _init_cursor(str(tmp_path))
-        config = json.loads(mcp.read_text())
-        assert "codiff" in config["mcpServers"]
-        assert "other" in config["mcpServers"]
-
-
-class TestInitCopilot:
-    def test_creates_vscode_mcp_json(self, tmp_path):
-        _init_copilot(str(tmp_path))
-        config = json.loads((tmp_path / ".vscode/mcp.json").read_text())
-        assert config["servers"]["codiff"] == {"type": "stdio", "command": "codiff-mcp"}
-
-    def test_creates_copilot_instructions(self, tmp_path):
-        _init_copilot(str(tmp_path))
-        content = (tmp_path / ".github/copilot-instructions.md").read_text()
-        assert "codiff_diff" in content
-        assert "mermaid" in content
-
-    def test_skips_instructions_if_marker_present(self, tmp_path, capsys):
-        path = tmp_path / ".github/copilot-instructions.md"
-        path.parent.mkdir(parents=True)
-        path.write_text("<!-- codiff -->\nAlready here.\n")
-        _init_copilot(str(tmp_path))
-        assert "skipped" in capsys.readouterr().out
-        assert path.read_text() == "<!-- codiff -->\nAlready here.\n"
-
-    def test_appends_to_existing_instructions(self, tmp_path):
-        path = tmp_path / ".github/copilot-instructions.md"
-        path.parent.mkdir(parents=True)
-        path.write_text("# Existing\n\nOther instructions.\n")
-        _init_copilot(str(tmp_path))
-        content = path.read_text()
-        assert "Existing" in content
-        assert "codiff_diff" in content
-
-
 class TestInitCodex:
     def test_creates_toml_config(self, tmp_path):
         _init_codex(str(tmp_path))
@@ -181,9 +118,8 @@ class TestInitCodex:
         assert "skipped" in capsys.readouterr().out
 
 
-class TestInitWindsurf:
+class TestInitGemini:
     def _setup(self, tmp_path, monkeypatch):
-        """Return (fake_home, repo) and redirect HOME so Path.home() is sandboxed."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         repo = tmp_path / "repo"
@@ -191,53 +127,49 @@ class TestInitWindsurf:
         monkeypatch.setenv("HOME", str(fake_home))
         return fake_home, repo
 
-    def test_creates_mcp_config(self, tmp_path, monkeypatch):
+    def test_creates_settings_json(self, tmp_path, monkeypatch):
         fake_home, repo = self._setup(tmp_path, monkeypatch)
-        _init_windsurf(str(repo))
-        mcp = fake_home / ".codeium/windsurf/mcp_config.json"
-        config = json.loads(mcp.read_text())
+        _init_gemini(str(repo))
+        config = json.loads((fake_home / ".gemini/settings.json").read_text())
         assert config["mcpServers"]["codiff"] == {"command": "codiff-mcp"}
 
-    def test_creates_windsurfrules(self, tmp_path, monkeypatch):
+    def test_skips_if_already_registered(self, tmp_path, monkeypatch, capsys):
         fake_home, repo = self._setup(tmp_path, monkeypatch)
-        _init_windsurf(str(repo))
-        content = (repo / ".windsurfrules").read_text()
-        assert "codiff_diff" in content
-
-    def test_skips_windsurfrules_if_marker_present(self, tmp_path, monkeypatch, capsys):
-        fake_home, repo = self._setup(tmp_path, monkeypatch)
-        (repo / ".windsurfrules").write_text("<!-- codiff -->\nAlready here.\n")
-        _init_windsurf(str(repo))
+        path = fake_home / ".gemini/settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"mcpServers": {"codiff": {"command": "codiff-mcp"}}}))
+        _init_gemini(str(repo))
         assert "skipped" in capsys.readouterr().out
 
-    def test_merges_existing_mcp_config(self, tmp_path, monkeypatch):
+    def test_merges_with_existing_servers(self, tmp_path, monkeypatch):
         fake_home, repo = self._setup(tmp_path, monkeypatch)
-        mcp = fake_home / ".codeium/windsurf/mcp_config.json"
-        mcp.parent.mkdir(parents=True)
-        mcp.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
-        _init_windsurf(str(repo))
-        config = json.loads(mcp.read_text())
+        path = fake_home / ".gemini/settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"mcpServers": {"other": {"command": "other"}}}))
+        _init_gemini(str(repo))
+        config = json.loads(path.read_text())
         assert "codiff" in config["mcpServers"]
         assert "other" in config["mcpServers"]
 
-
-class TestInitGemini:
-    def test_creates_gemini_md(self, tmp_path):
-        _init_gemini(str(tmp_path))
-        content = (tmp_path / "GEMINI.md").read_text()
+    def test_creates_gemini_md(self, tmp_path, monkeypatch):
+        fake_home, repo = self._setup(tmp_path, monkeypatch)
+        _init_gemini(str(repo))
+        content = (repo / "GEMINI.md").read_text()
         assert "codiff_diff" in content
         assert "mermaid" in content
 
-    def test_appends_to_existing_gemini_md(self, tmp_path):
-        (tmp_path / "GEMINI.md").write_text("# Existing\n\nOther instructions.\n")
-        _init_gemini(str(tmp_path))
-        content = (tmp_path / "GEMINI.md").read_text()
+    def test_appends_to_existing_gemini_md(self, tmp_path, monkeypatch):
+        fake_home, repo = self._setup(tmp_path, monkeypatch)
+        (repo / "GEMINI.md").write_text("# Existing\n\nOther instructions.\n")
+        _init_gemini(str(repo))
+        content = (repo / "GEMINI.md").read_text()
         assert "Existing" in content
         assert "codiff_diff" in content
 
-    def test_skips_if_marker_present(self, tmp_path, capsys):
-        (tmp_path / "GEMINI.md").write_text("<!-- codiff -->\nAlready here.\n")
-        _init_gemini(str(tmp_path))
+    def test_skips_gemini_md_if_marker_present(self, tmp_path, monkeypatch, capsys):
+        fake_home, repo = self._setup(tmp_path, monkeypatch)
+        (repo / "GEMINI.md").write_text("<!-- codiff -->\nAlready here.\n")
+        _init_gemini(str(repo))
         assert "skipped" in capsys.readouterr().out
 
 
@@ -317,10 +249,7 @@ class TestInitFileInspection:
 
     def _run_all(self, repo, monkeypatch):
         _init_claude(str(repo))
-        _init_cursor(str(repo))
-        _init_copilot(str(repo))
         _init_codex(str(repo))
-        _init_windsurf(str(repo))
         _init_gemini(str(repo))
         _init_vibe(str(repo))
 
@@ -336,30 +265,6 @@ class TestInitFileInspection:
         text = (tmp_path / "CLAUDE.md").read_text()
         assert "<!-- codiff -->" in text
         assert "<!-- /codiff -->" in text
-        assert "codiff_diff" in text
-        assert 'format="mermaid"' in text
-
-    def test_cursor_mcp_json(self, tmp_path):
-        _init_cursor(str(tmp_path))
-        cfg = json.loads((tmp_path / ".cursor/mcp.json").read_text())
-        assert cfg == {"mcpServers": {"codiff": {"command": "codiff-mcp"}}}
-
-    def test_cursor_rules_mdc(self, tmp_path):
-        _init_cursor(str(tmp_path))
-        text = (tmp_path / ".cursor/rules/codiff.mdc").read_text()
-        assert "alwaysApply: true" in text
-        assert "codiff_diff" in text
-        assert 'format="mermaid"' in text
-
-    def test_copilot_vscode_mcp_json(self, tmp_path):
-        _init_copilot(str(tmp_path))
-        cfg = json.loads((tmp_path / ".vscode/mcp.json").read_text())
-        assert cfg == {"servers": {"codiff": {"type": "stdio", "command": "codiff-mcp"}}}
-
-    def test_copilot_instructions_md(self, tmp_path):
-        _init_copilot(str(tmp_path))
-        text = (tmp_path / ".github/copilot-instructions.md").read_text()
-        assert "<!-- codiff -->" in text
         assert "codiff_diff" in text
         assert 'format="mermaid"' in text
 
@@ -382,23 +287,16 @@ class TestInitFileInspection:
         assert (tmp_path / ".codex" / "config.toml").read_text().count("[mcp_servers.codiff]") == 1
         assert (tmp_path / "AGENTS.md").read_text().count("<!-- codiff -->") == 1
 
-    def test_windsurf_global_mcp(self, tmp_path, monkeypatch):
+    def test_gemini_settings_json(self, tmp_path, monkeypatch):
         fake_home, repo = self._setup(tmp_path, monkeypatch)
-        _init_windsurf(str(repo))
-        cfg = json.loads((fake_home / ".codeium/windsurf/mcp_config.json").read_text())
-        assert cfg == {"mcpServers": {"codiff": {"command": "codiff-mcp"}}}
+        _init_gemini(str(repo))
+        cfg = json.loads((fake_home / ".gemini/settings.json").read_text())
+        assert cfg["mcpServers"]["codiff"] == {"command": "codiff-mcp"}
 
-    def test_windsurf_rules(self, tmp_path, monkeypatch):
+    def test_gemini_md(self, tmp_path, monkeypatch):
         fake_home, repo = self._setup(tmp_path, monkeypatch)
-        _init_windsurf(str(repo))
-        text = (repo / ".windsurfrules").read_text()
-        assert "<!-- codiff -->" in text
-        assert "codiff_diff" in text
-        assert 'format="mermaid"' in text
-
-    def test_gemini_md(self, tmp_path):
-        _init_gemini(str(tmp_path))
-        text = (tmp_path / "GEMINI.md").read_text()
+        _init_gemini(str(repo))
+        text = (repo / "GEMINI.md").read_text()
         assert "<!-- codiff -->" in text
         assert "codiff_diff" in text
         assert 'format="mermaid"' in text
@@ -426,15 +324,10 @@ class TestInitFileInspection:
         tracked = {
             repo / ".mcp.json",
             repo / "CLAUDE.md",
-            repo / ".cursor/mcp.json",
-            repo / ".cursor/rules/codiff.mdc",
-            repo / ".vscode/mcp.json",
-            repo / ".github/copilot-instructions.md",
             repo / "AGENTS.md",
-            repo / ".windsurfrules",
             repo / "GEMINI.md",
+            fake_home / ".gemini/settings.json",
             fake_home / ".vibe/config.toml",
-            fake_home / ".codeium/windsurf/mcp_config.json",
         }
         snapshots = {p: p.read_text() for p in tracked}
 
@@ -456,11 +349,8 @@ class TestRunInit:
         monkeypatch.setenv("HOME", str(fake_home))
         for agent, expected_file, base in [
             ("claude", ".mcp.json", tmp_path),
-            ("cursor", ".cursor/mcp.json", tmp_path),
-            ("copilot", ".vscode/mcp.json", tmp_path),
             ("codex", "AGENTS.md", tmp_path),
-            ("windsurf", ".codeium/windsurf/mcp_config.json", fake_home),
-            ("gemini", "GEMINI.md", tmp_path),
+            ("gemini", ".gemini/settings.json", fake_home),
             ("vibe", ".vibe/config.toml", fake_home),
         ]:
             _run_init(str(tmp_path), agent)
@@ -475,20 +365,6 @@ class TestMainInit:
             main()
         assert (tmp_path / ".mcp.json").exists()
 
-    def test_dispatches_to_init_cursor(self, tmp_path):
-        with patch.object(
-            sys, "argv", ["codiff", "init", "--agent", "cursor", "--repo", str(tmp_path)]
-        ):
-            main()
-        assert (tmp_path / ".cursor/mcp.json").exists()
-
-    def test_dispatches_to_init_copilot(self, tmp_path):
-        with patch.object(
-            sys, "argv", ["codiff", "init", "--agent", "copilot", "--repo", str(tmp_path)]
-        ):
-            main()
-        assert (tmp_path / ".vscode/mcp.json").exists()
-
     def test_dispatches_to_init_codex(self, tmp_path):
         with patch.object(
             sys, "argv", ["codiff", "init", "--agent", "codex", "--repo", str(tmp_path)]
@@ -496,22 +372,15 @@ class TestMainInit:
             main()
         assert (tmp_path / "AGENTS.md").exists()
 
-    def test_dispatches_to_init_windsurf(self, tmp_path, monkeypatch):
+    def test_dispatches_to_init_gemini(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         monkeypatch.setenv("HOME", str(fake_home))
         with patch.object(
-            sys, "argv", ["codiff", "init", "--agent", "windsurf", "--repo", str(tmp_path)]
-        ):
-            main()
-        assert (fake_home / ".codeium/windsurf/mcp_config.json").exists()
-
-    def test_dispatches_to_init_gemini(self, tmp_path):
-        with patch.object(
             sys, "argv", ["codiff", "init", "--agent", "gemini", "--repo", str(tmp_path)]
         ):
             main()
-        assert (tmp_path / "GEMINI.md").exists()
+        assert (fake_home / ".gemini/settings.json").exists()
 
     def test_dispatches_to_init_vibe(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"

@@ -49,13 +49,6 @@ _instr = _load_instructions()
 _INSTRUCTIONS_MARKER: str = _instr["marker"]
 _INSTRUCTIONS_BODY: str = _instr["body"].rstrip("\n")
 _INSTRUCTIONS_BLOCK: str = f"{_INSTRUCTIONS_MARKER}\n{_INSTRUCTIONS_BODY}\n<!-- /codiff -->"
-_CURSOR_RULES_BLOCK: str = (
-    f"---\n"
-    f"description: {_instr['cursor']['description']}\n"
-    f"alwaysApply: {str(_instr['cursor']['alwaysApply']).lower()}\n"
-    f"---\n\n"
-    f"{_INSTRUCTIONS_BODY}"
-)
 
 
 def _write_mcp_config(
@@ -112,44 +105,6 @@ def _init_claude(repo_path: str) -> None:
     print("\n  Restart Claude Code to load the new MCP server.\n")
 
 
-def _init_cursor(repo_path: str) -> None:
-    """Cursor: .cursor/mcp.json + .cursor/rules/codiff.mdc"""
-    repo = Path(repo_path)
-    _write_mcp_config(
-        repo / ".cursor/mcp.json",
-        ".cursor/mcp.json",
-        "mcpServers",
-        "codiff",
-        {"command": "codiff-mcp"},
-    )
-    rules_path = repo / ".cursor/rules/codiff.mdc"
-    if rules_path.exists():
-        print(f"  ~ {'codiff.mdc':<30} codiff rules already exist, skipped")
-    else:
-        rules_path.parent.mkdir(parents=True, exist_ok=True)
-        rules_path.write_text(_CURSOR_RULES_BLOCK + "\n")
-        print(f"  + {'.cursor/rules/codiff.mdc':<30} created codiff rules")
-    print("\n  Restart Cursor to load the new MCP server.\n")
-
-
-def _init_copilot(repo_path: str) -> None:
-    """GitHub Copilot (VS Code): .vscode/mcp.json + .github/copilot-instructions.md"""
-    repo = Path(repo_path)
-    _write_mcp_config(
-        repo / ".vscode/mcp.json",
-        ".vscode/mcp.json",
-        "servers",
-        "codiff",
-        {"type": "stdio", "command": "codiff-mcp"},
-    )
-    _write_instructions(
-        repo / ".github/copilot-instructions.md",
-        ".github/copilot-instructions.md",
-        _INSTRUCTIONS_BLOCK,
-    )
-    print("\n  Reload the VS Code window to activate the MCP server (requires VS Code 1.99+).\n")
-
-
 _CODEX_TOML_ENTRY = '[mcp_servers.codiff]\ncommand = "codiff-mcp"\n'
 
 
@@ -186,30 +141,18 @@ def _init_codex(repo_path: str) -> None:
     print()
 
 
-def _init_windsurf(repo_path: str) -> None:
-    """Windsurf: global ~/.codeium/windsurf/mcp_config.json + .windsurfrules"""
+def _init_gemini(repo_path: str) -> None:
+    """Gemini CLI: global ~/.gemini/settings.json + GEMINI.md"""
     repo = Path(repo_path)
-    # Windsurf MCP config is global-only (no project-scoped config file).
-    mcp_path = Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
     _write_mcp_config(
-        mcp_path,
-        "~/.codeium/windsurf/mcp_config.json",
+        Path.home() / ".gemini" / "settings.json",
+        "~/.gemini/settings.json",
         "mcpServers",
         "codiff",
         {"command": "codiff-mcp"},
     )
-    _write_instructions(repo / ".windsurfrules", ".windsurfrules", _INSTRUCTIONS_BLOCK)
-    print("\n  Restart Windsurf to load the new MCP server.\n")
-
-
-def _init_gemini(repo_path: str) -> None:
-    """Gemini CLI: GEMINI.md (MCP config is global — manual setup required)"""
-    repo = Path(repo_path)
     _write_instructions(repo / "GEMINI.md", "GEMINI.md", _INSTRUCTIONS_BLOCK)
-    print(
-        "\n  To enable MCP, add codiff-mcp to ~/.gemini/settings.json:\n"
-        '    {"mcpServers": {"codiff": {"command": "codiff-mcp"}}}\n'
-    )
+    print("\n  Restart Gemini CLI to load the new MCP server.\n")
 
 
 _VIBE_SERVER_ENTRY: dict = {"name": "codiff", "transport": "stdio", "command": "codiff-mcp"}
@@ -259,10 +202,7 @@ def _init_vibe(repo_path: str) -> None:
 
 _INIT_AGENTS = {
     "claude": _init_claude,
-    "cursor": _init_cursor,
-    "copilot": _init_copilot,
     "codex": _init_codex,
-    "windsurf": _init_windsurf,
     "gemini": _init_gemini,
     "vibe": _init_vibe,
 }
