@@ -1,20 +1,16 @@
-"""Utilities for .gitignore-based path exclusion.
+"""Git and .gitignore utilities shared across the codebase."""
 
-Loads the repo-root .gitignore at startup and exposes helpers used by every
-filesystem walk (setup, incremental, watcher) to skip ignored paths.
-
-Only the repo-root .gitignore is loaded; nested .gitignore files are not
-supported (they're uncommon and add significant complexity).
-
-pathspec (https://github.com/cpburnz/python-pathspec) implements the same
-'gitwildmatch' pattern language that Git uses, so patterns like 'build/',
-'*.egg-info', and '!important' all behave as expected.
-"""
-
+import io
 import logging
 import os
+import subprocess
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# .gitignore exclusion
+# ---------------------------------------------------------------------------
 
 
 def load_gitignore(repo_path: str):
@@ -54,8 +50,6 @@ def is_dir_ignored(spec, repo_path: str, parent_abs: str, dirname: str) -> bool:
     if spec is None:
         return False
     rel = os.path.relpath(os.path.join(parent_abs, dirname), repo_path)
-    # Check both 'build' and 'build/' so patterns with and without trailing
-    # slash both work.
     return spec.match_file(rel) or spec.match_file(rel + "/")
 
 
@@ -65,3 +59,43 @@ def is_file_ignored(spec, repo_path: str, abs_file_path: str) -> bool:
         return False
     rel = os.path.relpath(abs_file_path, repo_path)
     return spec.match_file(rel)
+
+
+# ---------------------------------------------------------------------------
+# Git operations
+# ---------------------------------------------------------------------------
+
+
+def resolve_sha(repo_path: str, ref: str) -> str:
+    """Return the full 40-char commit SHA for a git ref."""
+    result = subprocess.run(
+        ["git", "rev-parse", ref],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def changed_files_between(repo_path: str, from_ref: str, to_ref: str) -> set[str]:
+    """Return relative paths of files changed between two git refs."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", from_ref, to_ref],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    raw = result.stdout.strip()
+    return set(raw.split("\n")) if raw else set()
+
+
+def git_archive(repo_path, ref):
+    proc = subprocess.run(
+        ["git", "archive", ref, "--format=tar"],
+        cwd=repo_path,
+        capture_output=True,
+        check=True,
+    )
+    return io.BytesIO(proc.stdout)

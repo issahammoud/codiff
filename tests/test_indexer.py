@@ -1,6 +1,8 @@
+import subprocess
+
 from sqlalchemy.orm import sessionmaker
 
-from codiff.db import Base, CommitMeta, make_sync_engine
+from codiff.db import Base, CallEdge, CommitMeta, make_sync_engine
 from codiff.diff.indexer import current_indexed_sha, ensure_indexed, resolve_sha
 
 
@@ -55,3 +57,33 @@ class TestEnsureIndexed:
         sha1 = ensure_indexed(str(git_repo), "HEAD")
         sha2 = ensure_indexed(str(git_repo), "HEAD")
         assert sha1 == sha2
+
+    def test_duplicate_calls_in_function_do_not_raise(self, tmp_path):
+        """A function calling the same callee twice must not cause a UNIQUE violation."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "app.py").write_text(
+            "def helper(): pass\n\ndef caller():\n    helper()\n    helper()\n"
+        )
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "t@t.com"], cwd=repo, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "T"], cwd=repo, check=True, capture_output=True
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+        ensure_indexed(str(repo), "HEAD")  # must not raise IntegrityError
+
+    def test_call_edges_populated_after_index(self, git_repo):
+        ensure_indexed(str(git_repo), "HEAD")
+        db_path = str(git_repo / ".codiff.db")
+        engine = make_sync_engine(db_path)
+        Base.metadata.create_all(engine)
+        with sessionmaker(bind=engine)() as session:
+            edges = session.query(CallEdge).all()
+        engine.dispose()
+        # app.py has world() → hello(), so at least one edge must exist
+        assert any(e.callee_id.endswith(".hello") for e in edges)

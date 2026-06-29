@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -93,6 +93,20 @@ class Class(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     repository: Mapped["Repository"] = relationship("Repository", back_populates="classes")
+
+
+class CallEdge(Base):
+    """Resolved call edges — one row per (caller, callee) function ID pair.
+
+    Populated during indexing so the DB is queryable as a call graph without
+    loading the full snapshot into memory.
+    """
+
+    __tablename__ = "call_edges"
+    __table_args__ = (Index("ix_call_edges_callee_id", "callee_id"),)
+
+    caller_id: Mapped[str] = mapped_column(String(512), nullable=False, primary_key=True)
+    callee_id: Mapped[str] = mapped_column(String(512), nullable=False, primary_key=True)
 
 
 class CommitMeta(Base):

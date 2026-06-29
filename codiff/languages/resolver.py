@@ -11,11 +11,40 @@ live here: import resolution, internal resolution, variable method calls,
 return-type-based resolution, and the method-name fallback.
 """
 
+import math
 import os
 import threading
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from typing import Dict, List
+
+# Set to the active resolver instance before creating the worker pool so that
+# forked worker processes inherit it via copy-on-write without pickling.
+_mp_resolver_instance: "BaseCallResolver | None" = None
+
+
+def _resolve_batch_mp(func_indices: list) -> list:
+    """Resolve a batch of functions by index in a forked worker process.
+
+    Returns [(func_id, resolved_calls)] — only strings, cheap to pickle back.
+    The resolver state (lookup dicts, function list) is inherited from the
+    parent process via fork/CoW; no pickling of FunctionChunk objects needed.
+    """
+    assert _mp_resolver_instance is not None
+    resolver: "BaseCallResolver" = _mp_resolver_instance
+    results: list[tuple[str, list[str]]] = []
+    for i in func_indices:
+        func = resolver.functions[i]
+        if not func.calls:
+            results.append((func.id, []))
+            continue
+        resolved_calls: list[str] = []
+        for call in func.calls:
+            r = resolver._resolve_single_call(call, func)
+            if r:
+                resolved_calls.extend(r)
+        results.append((func.id, resolved_calls))
+    return results
 
 
 class BaseCallResolver(ABC):
@@ -118,17 +147,37 @@ class BaseCallResolver(ABC):
     # Public entry point
     # ------------------------------------------------------------------
 
-    def resolve_all_calls(self, max_workers: int = 10) -> List:
-        resolved_functions = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(self._resolve_function_calls, function)
-                for function in self.functions
-            ]
-            for future in as_completed(futures):
-                resolved_functions.append(future.result())
-        self._resolve_decorator_calls(resolved_functions)
-        return resolved_functions
+    def resolve_all_calls(self, max_workers: int = 10, resolve_subset: List | None = None) -> List:
+        to_resolve = resolve_subset if resolve_subset is not None else self.functions
+        if not to_resolve:
+            return []
+
+        # Map each function object to its position in self.functions.
+        # Workers receive indices (ints) rather than FunctionChunk objects so
+        # the fork-inherited resolver state is used directly — no pickling of
+        # the large function list.
+        func_index_map = {id(f): i for i, f in enumerate(self.functions)}
+        indices = [func_index_map[id(f)] for f in to_resolve]
+
+        n_batches = max(1, max_workers * 4)
+        batch_size = math.ceil(len(indices) / n_batches)
+        batches = [indices[i : i + batch_size] for i in range(0, len(indices), batch_size)]
+
+        id_to_func = {f.id: f for f in self.functions}
+
+        global _mp_resolver_instance
+        _mp_resolver_instance = self
+        try:
+            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                for batch_result in pool.map(_resolve_batch_mp, batches, chunksize=1):
+                    for func_id, resolved_calls in batch_result:
+                        id_to_func[func_id].calls = resolved_calls
+        finally:
+            _mp_resolver_instance = None
+
+        resolved = [id_to_func[f.id] for f in to_resolve]
+        self._resolve_decorator_calls(resolved)
+        return resolved
 
     # ------------------------------------------------------------------
     # Decorator resolution

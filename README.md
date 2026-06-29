@@ -1,10 +1,100 @@
 # codiff
 
-A structural call-graph diff tool for Python codebases, built to work with coding agents. Instead of a line diff, it shows what changed at the function level — which functions were added and where they hook into existing code, which were modified, which were removed — with color-coded call chains consistent across files.
+A structural call-graph diff tool for multi-language codebases, built to work with coding agents. Instead of a line diff, it shows what changed at the function level, which functions were added and where they hook into existing code, which were modified, which were removed, with call relationships mapped across files.
+
+Here's the output of `codiff diff --base main --format mermaid` run on codiff's own codebase:
+
+```mermaid
+%%{init: {'layout': 'elk', 'elk': {'direction': 'RIGHT'}, 'maxTextSize': 999999, 'theme': 'base', 'themeVariables': {'background': '#ffffff', 'clusterBkg': '#f8fafc', 'clusterBorder': '#94a3b8', 'primaryColor': '#f8fafc', 'primaryBorderColor': '#94a3b8', 'primaryTextColor': '#1e293b', 'lineColor': '#64748b', 'fontSize': '13px', 'fontFamily': 'ui-monospace, SFMono-Regular, Menlo, monospace'}}}%%
+classDiagram
+    direction LR
+
+    class n5["codiff/cli.py"] {
+        ~ _run_diff()  sig
+        ~ main()
+    }
+
+    class n7["codiff/diff/indexer.py"] {
+        + _incremental_update_db()
+        ~ _full_index()  sig
+        ~ ensure_indexed()  sig
+    }
+
+    class n3["PythonParser"] {
+        <<codiff/languages/python/parser.py>>
+        ~ build_package_exports()  calls +1−1
+    }
+
+    class n8["codiff/diff/snapshot.py"] {
+        + _chunk_to_node_info()
+        + _git_changed_files()
+        + _parse_and_expand_stale()
+        + build_snapshot_incremental()
+        ~ build_from_path()  sig
+        ~ build_from_ref()  sig
+        ~ load_from_db()  calls +1−1
+    }
+    class n0["_ClassStub"] {
+        <<codiff/diff/snapshot.py>>
+        + __init__()
+    }
+    class n1["_NodeStub"] {
+        <<codiff/diff/snapshot.py>>
+        + __init__()
+    }
+
+    class n2["LanguageParser"] {
+        <<codiff/languages/parser.py>>
+        ~ build_modules_dict()  calls +1−1
+    }
+
+    class n6["codiff/db/operations.py"] {
+        + _insert_call_edges()
+        + _insert_classes()
+        + _insert_functions()
+        + _session()
+        + get_indexed_sha()
+        + load_snapshot()
+        + update_sha()
+        + write_full_snapshot()
+        + write_incremental()
+    }
+
+    style n5 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
+    style n7 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
+    style n3 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
+    style n8 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
+    style n0 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
+    style n1 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
+    style n2 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
+    style n6 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
+
+    %% Relationships
+    n3 --|> n2
+    n5 --> n8 : calls
+    n7 --> n0 : calls
+    n7 --> n1 : calls
+    n7 --> n6 : calls
+    n7 --> n8 : calls
+    n8 --> n0 : calls
+    n8 --> n1 : calls
+    n8 --> n6 : calls
+```
+
+Each box is a file or class. **Green** = only additions, **yellow** = at least one modification. Inside each box: `+` added function, `~` modified. Annotations: `sig` = signature changed, `calls +N−N` = now calls N more / N fewer functions. Arrows show which files call into which.
+
+## Supported languages
+
+| Language | Extensions |
+|---|---|
+| Python | `.py` |
+| TypeScript | `.ts`, `.tsx` |
 
 ## How it works
 
-codiff snapshots the Python call graph at two states (e.g. HEAD vs working tree), computes the node and edge delta, and derives structural facts: added/modified/removed functions. Every fact is computed deterministically from the resolved call graph — no LLM, no embeddings, fully offline.
+codiff maintains a SQLite call-graph index (`.codiff.db`) at the repo root. On first run it does a full parse; on subsequent runs it re-parses only the files changed since the last indexed commit, then detects stale callers (functions whose callees were renamed or deleted) and re-parses those too. Both the base and head snapshots are built incrementally from this index, so diffs stay fast even on large codebases.
+
+The graph delta — added, modified, removed functions — is computed deterministically from the resolved call graph. No LLM, no embeddings, fully offline.
 
 ## Requirements
 
@@ -30,6 +120,8 @@ codiff diff --head <ref>             # diff two git refs directly
 codiff diff --repo /path/to/repo     # diff a different repo
 codiff diff --include-tests          # include test functions (hidden by default)
 codiff diff --include-deleted        # include deleted functions (hidden by default)
+codiff diff --workers 8              # set parallel worker count (default: cpu_count // 2)
+codiff diff --debug                  # print timing breakdown for each processing step
 ```
 
 ### Output formats
@@ -42,7 +134,7 @@ codiff diff --include-deleted        # include deleted functions (hidden by defa
 
 ### MCP integration (Claude Code)
 
-Run once in any Python project you want to use codiff with:
+Run once in any project you want to use codiff with:
 
 ```bash
 codiff init --agent claude
@@ -116,10 +208,22 @@ The Mermaid format produces **two diagrams**:
 
 2. **Isolated modules** — files with no cross-file relationships (e.g. migration files, config). Grouped by their top two folder levels into namespace clusters, rendered with Dagre left-to-right.
 
-Both diagrams use tinted color-coded class boxes:
-- **Green** — only additions
-- **Yellow** — modifications
+Both diagrams use color-coded class boxes:
+- **Green** — only additions in this file/class
+- **Yellow** — at least one modification
 - **Red** — only deletions (requires `--include-deleted`)
-- **Tinted chain color** — all classes in the same connected call chain share a color
 
-The class box title shows the file path as a `«stereotype»` subtitle below the class name.
+Inside each box, functions are listed with a prefix and optional annotation:
+
+| Prefix | Meaning |
+|---|---|
+| `+` | Function was added |
+| `~` | Function was modified |
+| `-` | Function was removed |
+
+| Annotation | Meaning |
+|---|---|
+| `sig` | Parameters or return type changed |
+| `calls +N−N` | Call list changed — N new callees, N dropped |
+
+When a class appears inside a file box, its file path is shown as a `«stereotype»` subtitle below the class name.
