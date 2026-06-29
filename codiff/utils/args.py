@@ -5,7 +5,7 @@ import os
 
 DEFAULT_WORKERS: int = max(1, (os.cpu_count() or 2) // 2)
 
-SUPPORTED_AGENTS: list[str] = ["claude", "cursor", "copilot", "codex", "windsurf", "gemini", "vibe"]
+SUPPORTED_AGENTS: list[str] = ["claude", "codex", "gemini", "vibe"]
 
 
 def build_parser() -> argparse.ArgumentParser:
