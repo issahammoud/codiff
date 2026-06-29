@@ -9,76 +9,48 @@ Here's the output of `codiff diff --base main --format mermaid` run on codiff's 
 classDiagram
     direction LR
 
-    class n5["codiff/cli.py"] {
-        ~ _run_diff()  sig
-        ~ main()
+    class n0["codiff/cli.py"] {
+        + _init_codex()
+        + _init_copilot()
+        + _init_cursor()
+        + _init_gemini()
+        + _init_vibe()
+        + _init_windsurf()
+        + _write_instructions()
+        + _write_mcp_config()
+        ~ _init_claude()  calls +2
+        ~ _run_diff()  calls +1−6
+        ~ _run_init()  calls −1
+        ~ main()  calls +1
     }
 
-    class n7["codiff/diff/indexer.py"] {
-        + _incremental_update_db()
-        ~ _full_index()  sig
-        ~ ensure_indexed()  sig
+    class n2["codiff/mcp_server.py"] {
+        ~ codiff_diff()  calls +1−7
     }
 
-    class n3["PythonParser"] {
-        <<codiff/languages/python/parser.py>>
-        ~ build_package_exports()  calls +1−1
+    class n3["codiff/utils/args.py"] {
+        + build_parser()
     }
 
-    class n8["codiff/diff/snapshot.py"] {
-        + _chunk_to_node_info()
-        + _git_changed_files()
-        + _parse_and_expand_stale()
-        + build_snapshot_incremental()
-        ~ build_from_path()  sig
-        ~ build_from_ref()  sig
-        ~ load_from_db()  calls +1−1
-    }
-    class n0["_ClassStub"] {
-        <<codiff/diff/snapshot.py>>
-        + __init__()
-    }
-    class n1["_NodeStub"] {
-        <<codiff/diff/snapshot.py>>
-        + __init__()
+    class n4["codiff/utils/instructions.py"] {
+        + load()
     }
 
-    class n2["LanguageParser"] {
-        <<codiff/languages/parser.py>>
-        ~ build_modules_dict()  calls +1−1
+    class n1["codiff/diff/engine.py"] {
+        + compute_diff()
     }
 
-    class n6["codiff/db/operations.py"] {
-        + _insert_call_edges()
-        + _insert_classes()
-        + _insert_functions()
-        + _session()
-        + get_indexed_sha()
-        + load_snapshot()
-        + update_sha()
-        + write_full_snapshot()
-        + write_incremental()
-    }
-
-    style n5 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
-    style n7 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
-    style n3 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
-    style n8 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
-    style n0 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
-    style n1 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
+    style n0 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
     style n2 fill:#fefce8,color:#854d0e,stroke:#f59e0b,stroke-width:3px
-    style n6 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
+    style n3 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
+    style n4 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
+    style n1 fill:#f0fdf4,color:#166534,stroke:#22c55e,stroke-width:3px
 
     %% Relationships
-    n3 --|> n2
-    n5 --> n8 : calls
-    n7 --> n0 : calls
-    n7 --> n1 : calls
-    n7 --> n6 : calls
-    n7 --> n8 : calls
-    n8 --> n0 : calls
-    n8 --> n1 : calls
-    n8 --> n6 : calls
+    n0 --> n1 : calls
+    n0 --> n3 : calls
+    n0 --> n4 : calls
+    n2 --> n1 : calls
 ```
 
 Each box is a file or class. **Green** = only additions, **yellow** = at least one modification. Inside each box: `+` added function, `~` modified. Annotations: `sig` = signature changed, `calls +N−N` = now calls N more / N fewer functions. Arrows show which files call into which.
