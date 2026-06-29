@@ -1,115 +1,18 @@
 """CLI entry point for codiff."""
 
-import argparse
+import json
 import logging
 import os
 import sys
-import time
+from pathlib import Path
 
-_DEFAULT_WORKERS = max(1, (os.cpu_count() or 2) // 2)
+from codiff.utils.args import DEFAULT_WORKERS as _DEFAULT_WORKERS
+from codiff.utils.args import build_parser
+from codiff.utils.instructions import load as _load_instructions
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="codiff",
-        description="Structural diff of a codebase between two states",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="count",
-        default=0,
-        help="Verbosity: -v for INFO, -vv for DEBUG",
-    )
-
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # index subcommand — parse a repo and write call graph to DB
-    index_parser = subparsers.add_parser(
-        "index",
-        help="Parse a repository and write the call graph to the database",
-    )
-    index_parser.add_argument(
-        "repo_path",
-        help="Path to the repository root directory",
-    )
-
-    # diff subcommand
-    diff_parser = subparsers.add_parser(
-        "diff",
-        help="Show the structural delta between a base commit and the working tree",
-    )
-    diff_parser.add_argument(
-        "--base",
-        default="HEAD",
-        metavar="GIT_REF",
-        help="Base git ref to compare against (default: HEAD)",
-    )
-    diff_parser.add_argument(
-        "--head",
-        default=None,
-        metavar="GIT_REF",
-        help="Head git ref to compare to (default: working tree)",
-    )
-    diff_parser.add_argument(
-        "--include-tests",
-        action="store_true",
-        default=False,
-        help="Include test functions in the diff output (hidden by default)",
-    )
-    diff_parser.add_argument(
-        "--include-deleted",
-        action="store_true",
-        default=False,
-        help="Include deleted functions in the diff output (hidden by default)",
-    )
-    diff_parser.add_argument(
-        "--format",
-        choices=["terminal", "mermaid", "json"],
-        default="terminal",
-        metavar="FORMAT",
-        help="Output format: terminal (default), mermaid, or json",
-    )
-    diff_parser.add_argument(
-        "--repo",
-        default=".",
-        metavar="PATH",
-        help="Path to the repository root (default: current directory)",
-    )
-    diff_parser.add_argument(
-        "--workers",
-        type=int,
-        default=_DEFAULT_WORKERS,
-        metavar="N",
-        help=f"Number of parallel workers for parsing and resolution (default: {_DEFAULT_WORKERS}, half of cpu count)",
-    )
-    diff_parser.add_argument(
-        "--debug",
-        action="store_true",
-        default=False,
-        help="Show timing breakdown for each processing step (sets log level to DEBUG)",
-    )
-
-    # init subcommand — configure a coding agent to use codiff
-    init_parser = subparsers.add_parser(
-        "init",
-        help="Configure a coding agent to use codiff in the current project",
-    )
-    init_parser.add_argument(
-        "--agent",
-        required=True,
-        choices=["claude"],
-        metavar="AGENT",
-        help="Coding agent to configure (supported: claude)",
-    )
-    init_parser.add_argument(
-        "--repo",
-        default=".",
-        metavar="PATH",
-        help="Path to the repository root (default: current directory)",
-    )
-
-    args = parser.parse_args()
+    args = build_parser().parse_args()
 
     level = logging.DEBUG if (args.verbose >= 2 or getattr(args, "debug", False)) else logging.INFO
     logging.basicConfig(
@@ -138,39 +41,200 @@ def main():
         _run_init(repo_path=args.repo, agent=args.agent)
 
 
-def _run_init(repo_path: str, agent: str) -> None:
-    repo_path = os.path.abspath(repo_path)
-    print(f"\nConfiguring codiff for {agent} in {repo_path}\n")
-    if agent == "claude":
-        _init_claude(repo_path)
+# ---------------------------------------------------------------------------
+# Init helpers — instructions loaded from utils/instructions.yaml
+# ---------------------------------------------------------------------------
+
+_instr = _load_instructions()
+_INSTRUCTIONS_MARKER: str = _instr["marker"]
+_INSTRUCTIONS_BODY: str = _instr["body"].rstrip("\n")
+_INSTRUCTIONS_BLOCK: str = f"{_INSTRUCTIONS_MARKER}\n{_INSTRUCTIONS_BODY}\n<!-- /codiff -->"
+_CURSOR_RULES_BLOCK: str = (
+    f"---\n"
+    f"description: {_instr['cursor']['description']}\n"
+    f"alwaysApply: {str(_instr['cursor']['alwaysApply']).lower()}\n"
+    f"---\n\n"
+    f"{_INSTRUCTIONS_BODY}"
+)
+
+
+def _write_mcp_config(
+    path: Path,
+    label: str,
+    top_key: str,
+    server_name: str,
+    server_cfg: dict,
+) -> None:
+    """Write or merge an MCP server entry into a JSON config file."""
+    config: dict = {}
+    if path.exists():
+        try:
+            config = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            config = {}
+    servers: dict = config.setdefault(top_key, {})
+    if server_name in servers:
+        print(f"  ~ {label:<30} codiff MCP already registered, skipped")
+    else:
+        servers[server_name] = server_cfg
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2) + "\n")
+        print(f"  + {label:<30} registered codiff-mcp server")
+
+
+def _write_instructions(path: Path, label: str, block: str) -> None:
+    """Create or append a codiff instructions block to a markdown file."""
+    if path.exists():
+        existing = path.read_text()
+        if _INSTRUCTIONS_MARKER in existing:
+            print(f"  ~ {label:<30} codiff instructions already present, skipped")
+        else:
+            path.write_text(existing.rstrip("\n") + "\n\n" + block + "\n")
+            print(f"  + {label:<30} appended codiff instructions")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(block + "\n")
+        print(f"  + {label:<30} created with codiff instructions")
+
+
+# ---------------------------------------------------------------------------
+# Per-agent init functions
+# ---------------------------------------------------------------------------
 
 
 def _init_claude(repo_path: str) -> None:
-    """Write MCP server config + CLAUDE.md instructions for Claude Code."""
-    import json
-    from pathlib import Path
+    """Claude Code: .mcp.json + CLAUDE.md"""
+    repo = Path(repo_path)
+    _write_mcp_config(
+        repo / ".mcp.json", ".mcp.json", "mcpServers", "codiff", {"command": "codiff-mcp"}
+    )
+    _write_instructions(repo / "CLAUDE.md", "CLAUDE.md", _INSTRUCTIONS_BLOCK)
+    print("\n  Restart Claude Code to load the new MCP server.\n")
+
+
+def _init_cursor(repo_path: str) -> None:
+    """Cursor: .cursor/mcp.json + .cursor/rules/codiff.mdc"""
+    repo = Path(repo_path)
+    _write_mcp_config(
+        repo / ".cursor/mcp.json",
+        ".cursor/mcp.json",
+        "mcpServers",
+        "codiff",
+        {"command": "codiff-mcp"},
+    )
+    rules_path = repo / ".cursor/rules/codiff.mdc"
+    if rules_path.exists():
+        print(f"  ~ {'codiff.mdc':<30} codiff rules already exist, skipped")
+    else:
+        rules_path.parent.mkdir(parents=True, exist_ok=True)
+        rules_path.write_text(_CURSOR_RULES_BLOCK + "\n")
+        print(f"  + {'.cursor/rules/codiff.mdc':<30} created codiff rules")
+    print("\n  Restart Cursor to load the new MCP server.\n")
+
+
+def _init_copilot(repo_path: str) -> None:
+    """GitHub Copilot (VS Code): .vscode/mcp.json + .github/copilot-instructions.md"""
+    repo = Path(repo_path)
+    _write_mcp_config(
+        repo / ".vscode/mcp.json",
+        ".vscode/mcp.json",
+        "servers",
+        "codiff",
+        {"type": "stdio", "command": "codiff-mcp"},
+    )
+    _write_instructions(
+        repo / ".github/copilot-instructions.md",
+        ".github/copilot-instructions.md",
+        _INSTRUCTIONS_BLOCK,
+    )
+    print("\n  Reload the VS Code window to activate the MCP server (requires VS Code 1.99+).\n")
+
+
+def _init_codex(repo_path: str) -> None:
+    """OpenAI Codex CLI: AGENTS.md (no MCP support)"""
+    repo = Path(repo_path)
+    _write_instructions(repo / "AGENTS.md", "AGENTS.md", _INSTRUCTIONS_BLOCK)
+    print()
+
+
+def _init_windsurf(repo_path: str) -> None:
+    """Windsurf: global ~/.codeium/windsurf/mcp_config.json + .windsurfrules"""
+    repo = Path(repo_path)
+    # Windsurf MCP config is global-only (no project-scoped config file).
+    mcp_path = Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
+    _write_mcp_config(
+        mcp_path,
+        "~/.codeium/windsurf/mcp_config.json",
+        "mcpServers",
+        "codiff",
+        {"command": "codiff-mcp"},
+    )
+    _write_instructions(repo / ".windsurfrules", ".windsurfrules", _INSTRUCTIONS_BLOCK)
+    print("\n  Restart Windsurf to load the new MCP server.\n")
+
+
+def _init_gemini(repo_path: str) -> None:
+    """Gemini CLI: GEMINI.md (MCP config is global — manual setup required)"""
+    repo = Path(repo_path)
+    _write_instructions(repo / "GEMINI.md", "GEMINI.md", _INSTRUCTIONS_BLOCK)
+    print(
+        "\n  To enable MCP, add codiff-mcp to ~/.gemini/settings.json:\n"
+        '    {"mcpServers": {"codiff": {"command": "codiff-mcp"}}}\n'
+    )
+
+
+_VIBE_TOML_ENTRY = (
+    '[[mcp_servers]]\nname = "codiff"\ntransport = "stdio"\ncommand = "codiff-mcp"\nargs = []\n'
+)
+
+
+def _init_vibe(repo_path: str) -> None:
+    """Mistral Vibe: .vibe/config.toml with [[mcp_servers]] array entry.
+
+    Vibe has no separate instructions file — MCP registration is sufficient.
+    """
+    import tomllib
 
     repo = Path(repo_path)
+    config_path = repo / ".vibe" / "config.toml"
+    label = ".vibe/config.toml"
 
-    # ── .mcp.json ─────────────────────────────────────────────────────────────
-    mcp_json_path = repo / ".mcp.json"
-
-    mcp_config: dict = {}
-    if mcp_json_path.exists():
+    if config_path.exists():
         try:
-            mcp_config = json.loads(mcp_json_path.read_text())
-        except json.JSONDecodeError:
-            mcp_config = {}
-
-    mcp_servers: dict = mcp_config.setdefault("mcpServers", {})
-    if "codiff" in mcp_servers:
-        print("  ~ .mcp.json               codiff MCP already registered, skipped")
+            with open(config_path, "rb") as f:
+                cfg = tomllib.load(f)
+            servers = cfg.get("mcp_servers", [])
+            if any(s.get("name") == "codiff" for s in servers):
+                print(f"  ~ {label:<30} codiff MCP already registered, skipped")
+                print()
+                return
+        except Exception:
+            pass
+        config_path.write_text(config_path.read_text().rstrip("\n") + "\n\n" + _VIBE_TOML_ENTRY)
+        print(f"  + {label:<30} registered codiff-mcp server")
     else:
-        mcp_servers["codiff"] = {"command": "codiff-mcp"}
-        mcp_json_path.write_text(json.dumps(mcp_config, indent=2) + "\n")
-        print("  + .mcp.json               registered codiff-mcp server")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(_VIBE_TOML_ENTRY)
+        print(f"  + {label:<30} created with codiff-mcp server")
 
-    print("\n  Restart Claude Code to load the new MCP server.\n")
+    print("\n  Restart Vibe to load the new MCP server.\n")
+
+
+_INIT_AGENTS = {
+    "claude": _init_claude,
+    "cursor": _init_cursor,
+    "copilot": _init_copilot,
+    "codex": _init_codex,
+    "windsurf": _init_windsurf,
+    "gemini": _init_gemini,
+    "vibe": _init_vibe,
+}
+
+
+def _run_init(repo_path: str, agent: str) -> None:
+    repo_path = os.path.abspath(repo_path)
+    print(f"\nConfiguring codiff for {agent} in {repo_path}\n")
+    _INIT_AGENTS[agent](repo_path)
 
 
 def _run_diff(
@@ -182,74 +246,17 @@ def _run_diff(
     fmt: str = "terminal",
     max_workers: int = _DEFAULT_WORKERS,
 ) -> None:
-    from codiff.db import get_db_path
-    from codiff.diff.analysis import analyze
-    from codiff.diff.differ import diff_snapshots
-    from codiff.diff.indexer import ensure_indexed
-    from codiff.diff.snapshot import build_snapshot_incremental, load_from_db
+    from codiff.diff.engine import compute_diff
     from codiff.export import render_json, render_mermaid, render_terminal
 
-    log = logging.getLogger(__name__)
-    repo_path = os.path.abspath(repo_path)
-    log.info("Diffing %s → %s", base_ref, head_ref or "working tree")
-
-    # DB is anchored at HEAD. Both base and head snapshots are built incrementally
-    # from the DB using git diff, so only the changed files are re-parsed.
-    t = time.perf_counter()
-    db_sha = ensure_indexed(repo_path, "HEAD", max_workers=max_workers)
-    log.debug("[timing] ensure_indexed: %.2fs", time.perf_counter() - t)
-
-    db = get_db_path(repo_path)
-    t = time.perf_counter()
-    db_snapshot = load_from_db(db)
-    log.debug(
-        "[timing] load_from_db: %.2fs  (%d nodes)", time.perf_counter() - t, len(db_snapshot.nodes)
+    result = compute_diff(
+        repo_path,
+        base_ref=base_ref,
+        head_ref=head_ref,
+        include_tests=include_tests,
+        include_deleted=include_deleted,
+        max_workers=max_workers,
     )
-
-    t = time.perf_counter()
-    base = build_snapshot_incremental(
-        repo_path, db_snapshot, db_sha, base_ref, max_workers=max_workers
-    )
-    log.debug(
-        "[timing] build base snapshot: %.2fs  (%d nodes)",
-        time.perf_counter() - t,
-        len(base.nodes),
-    )
-
-    t = time.perf_counter()
-    head = build_snapshot_incremental(
-        repo_path, db_snapshot, db_sha, head_ref, max_workers=max_workers
-    )
-    log.debug(
-        "[timing] build head snapshot: %.2fs  (%d nodes)",
-        time.perf_counter() - t,
-        len(head.nodes),
-    )
-
-    t = time.perf_counter()
-    graph_diff = diff_snapshots(base, head)
-    log.debug(
-        "[timing] diff_snapshots: %.2fs  (+%d -%d ~%d)",
-        time.perf_counter() - t,
-        len(graph_diff.added_nodes),
-        len(graph_diff.removed_nodes),
-        len(graph_diff.modified_nodes),
-    )
-
-    t = time.perf_counter()
-    result = analyze(graph_diff, base, head)
-    log.debug("[timing] analyze: %.2fs", time.perf_counter() - t)
-
-    if not include_tests:
-        from codiff.utils.files import is_test_file
-
-        result.added = [fn for fn in result.added if not is_test_file(fn.file_path)]
-        result.modified = [fn for fn in result.modified if not is_test_file(fn.file_path)]
-        result.removed = [fn for fn in result.removed if not is_test_file(fn.file_path)]
-
-    if not include_deleted:
-        result.removed = []
-
     head_label = head_ref or "working tree"
     if fmt == "json":
         print(render_json(result, base_ref=base_ref, head_ref=head_label))
