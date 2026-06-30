@@ -168,10 +168,15 @@ class BaseCallResolver(ABC):
         global _mp_resolver_instance
         _mp_resolver_instance = self
         try:
-            with ProcessPoolExecutor(max_workers=max_workers) as pool:
-                for batch_result in pool.map(_resolve_batch_mp, batches, chunksize=1):
-                    for func_id, resolved_calls in batch_result:
+            if max_workers <= 1:
+                for batch in batches:
+                    for func_id, resolved_calls in _resolve_batch_mp(batch):
                         id_to_func[func_id].calls = resolved_calls
+            else:
+                with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                    for batch_result in pool.map(_resolve_batch_mp, batches, chunksize=1):
+                        for func_id, resolved_calls in batch_result:
+                            id_to_func[func_id].calls = resolved_calls
         finally:
             _mp_resolver_instance = None
 
