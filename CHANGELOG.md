@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1] - 2026-06-30
+
+### Fixed
+
+- MCP tool (`codiff_diff`) blocked indefinitely when called from Claude Code or any other stdio-based MCP host. `ProcessPoolExecutor` worker processes inherited the server's stdin/stdout file descriptors (the JSON-RPC channel), corrupting the protocol. The MCP path now runs parsing and call resolution sequentially in-process (`max_workers=1`) — no subprocesses, no inherited file descriptors.
+- `codiff init --agent` now pre-builds the call-graph index with full parallelism after writing the agent config files, so the first MCP diff call hits the fast incremental path instead of paying the full-index cost.
+
 ## [0.1.0] - 2026-06-30
 
 First public release.
