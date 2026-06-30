@@ -11,6 +11,7 @@ appending it to _PARSERS — no other file changes required.
 """
 
 import logging
+import multiprocessing
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -173,6 +174,7 @@ def parse_repository(
     chunksize = max(1, len(pending) // (max_workers * 8))
     with ProcessPoolExecutor(
         max_workers=max_workers,
+        mp_context=multiprocessing.get_context("spawn"),
         initializer=_init_mp_worker,
         initargs=(modules_dict,),
     ) as pool:

@@ -46,7 +46,7 @@ def codiff_diff(
     head_ref: Optional[str] = None,
     include_tests: bool = False,
     include_deleted: bool = False,
-    format: str = "terminal",
+    format: str = "mermaid",
 ) -> str:
     """Compute and render the structural call-graph diff.
 
