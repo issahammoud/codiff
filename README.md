@@ -1,8 +1,80 @@
 # codiff
 
-A structural call-graph diff tool for multi-language codebases, built to work with coding agents. Instead of a line diff, it shows what changed at the function level, which functions were added and where they hook into existing code, which were modified, which were removed, with call relationships mapped across files.
+A structural call-graph diff tool for multi-language codebases, built to work with coding agents.
 
-Here's the output of `codiff diff --base main --format mermaid` run on codiff's own codebase:
+Instead of a line diff, codiff shows what changed **at the function level**: which functions were added and where they hook into existing code, which were modified, which were removed — with call relationships mapped across files.
+
+No LLM, no embeddings, fully offline.
+
+## Supported languages
+
+| Language | Extensions |
+|---|---|
+| Python | `.py` |
+| TypeScript | `.ts`, `.tsx` |
+
+## Installation
+
+```bash
+pip install codiff
+```
+
+## Quickstart
+
+```bash
+# Run from inside any git repository
+codiff diff
+```
+
+This compares your working tree against `HEAD`. If everything is already committed, use `--base` and `--head` to compare two refs explicitly:
+
+```bash
+# Diff between two branches
+codiff diff --base main --head my-feature
+
+# Diff introduced by the last commit only
+codiff diff --base HEAD~1 --head HEAD
+
+# Diff between two arbitrary commits
+codiff diff --base a1b2c3d --head e4f5g6h
+```
+
+To get a Mermaid diagram (useful for PR descriptions):
+
+```bash
+codiff diff --base main --format mermaid
+```
+
+To save the diagram to a file and preview it:
+
+```bash
+codiff diff --base main --format mermaid > mermaid.md
+```
+
+Open `mermaid.md` in any Markdown previewer (VS Code, GitHub, etc.) to visualise the diagram.
+
+## Agent integration (MCP)
+
+Run once per project to wire codiff into your coding agent:
+
+```bash
+codiff init --agent claude      # Claude Code
+codiff init --agent codex       # OpenAI Codex CLI
+codiff init --agent gemini      # Gemini CLI
+codiff init --agent vibe        # Mistral Vibe
+```
+
+This writes the MCP server config and a project instructions file that tells the agent to call `codiff_diff` when creating pull requests. The agent then automatically embeds a structural diagram in every PR description.
+
+| Agent | MCP config | Instructions file |
+|---|---|---|
+| `claude` | `.mcp.json` | `CLAUDE.md` |
+| `codex` | `.codex/config.toml` | `AGENTS.md` |
+| `gemini` | `~/.gemini/settings.json`  | `GEMINI.md` |
+| `vibe` | `~/.vibe/config.toml`  | — |
+
+
+Here's the output of `codiff diff --base b8dde67 --head d25c385 --format mermaid` run on codiff's own codebase:
 
 ```mermaid
 %%{init: {'layout': 'elk', 'elk': {'direction': 'RIGHT'}, 'maxTextSize': 999999, 'theme': 'base', 'themeVariables': {'background': '#ffffff', 'clusterBkg': '#f8fafc', 'clusterBorder': '#94a3b8', 'primaryColor': '#f8fafc', 'primaryBorderColor': '#94a3b8', 'primaryTextColor': '#1e293b', 'lineColor': '#64748b', 'fontSize': '13px', 'fontFamily': 'ui-monospace, SFMono-Regular, Menlo, monospace'}}}%%
@@ -83,58 +155,18 @@ classDiagram
 
 Each box is a file or class. **Green** = only additions, **yellow** = at least one modification. Inside each box: `+` added function, `~` modified. Annotations: `sig` = signature changed, `calls +N−N` = now calls N more / N fewer functions. Arrows show which files call into which.
 
-## Supported languages
-
-| Language | Extensions |
-|---|---|
-| Python | `.py` |
-| TypeScript | `.ts`, `.tsx` |
-
 ## How it works
 
 codiff maintains a SQLite call-graph index (`.codiff.db`) at the repo root. On first run it does a full parse; on subsequent runs it re-parses only the files changed since the last indexed commit, then detects stale callers (functions whose callees were renamed or deleted) and re-parses those too. Both the base and head snapshots are built incrementally from this index, so diffs stay fast even on large codebases.
 
-The graph delta — added, modified, removed functions — is computed deterministically from the resolved call graph. No LLM, no embeddings, fully offline.
+The graph delta — added, modified, removed functions — is computed deterministically from the resolved call graph.
 
 ## Requirements
 
 - Python 3.11+
 - Git
 
-## Installation
-
-```bash
-pip install codiff
-```
-
-## Usage
-
-### Agent integration (MCP + project instructions)
-
-Run once per project to configure your coding agent:
-
-```bash
-codiff init --agent claude      # Claude Code
-codiff init --agent codex       # OpenAI Codex CLI
-codiff init --agent gemini      # Gemini CLI
-codiff init --agent vibe        # Mistral Vibe
-```
-
-Each command writes the MCP server config and a project instructions file telling the agent to use the `codiff_diff` MCP tool when creating pull requests:
-
-| Agent | MCP config | Instructions file |
-|---|---|---|
-| `claude` | `.mcp.json` | `CLAUDE.md` |
-| `codex` | `.codex/config.toml` | `AGENTS.md` |
-| `gemini` | `~/.gemini/settings.json` ¹ | `GEMINI.md` |
-| `vibe` | `~/.vibe/config.toml` ² | — |
-
-¹ Gemini CLI MCP config is global (not project-scoped). Restart Gemini CLI after running.
-² Mistral Vibe MCP config is global (not project-scoped). Restart Vibe after running.
-
-When creating a pull request, the agent calls `codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")` and embeds the returned diagram in the PR description. GitHub renders Mermaid natively — no plugin needed.
-
-### CLI
+## CLI reference
 
 ```bash
 # Index a repository (writes .codiff.db — runs automatically on first diff)
@@ -152,7 +184,7 @@ codiff diff --include-deleted        # include deleted functions (hidden by defa
 codiff diff --workers 8              # set parallel worker count (default: cpu_count // 2)
 codiff diff --debug                  # print timing breakdown for each processing step
 
-# Configure a coding agent (see Agent integration below)
+# Configure a coding agent
 codiff init --agent <agent>
 ```
 
@@ -163,7 +195,6 @@ codiff init --agent <agent>
 | `terminal` | Colored terminal output with UML-style boxes (default) |
 | `mermaid` | Two Mermaid `classDiagram` blocks — paste into any Markdown file or PR description |
 | `json` | Structured JSON — consumed by editor integrations (e.g. the VS Code extension) |
-
 
 ## Reading the terminal output
 
