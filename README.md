@@ -109,6 +109,31 @@ pip install codiff
 
 ## Usage
 
+### Agent integration (MCP + project instructions)
+
+Run once per project to configure your coding agent:
+
+```bash
+codiff init --agent claude      # Claude Code
+codiff init --agent codex       # OpenAI Codex CLI
+codiff init --agent gemini      # Gemini CLI
+codiff init --agent vibe        # Mistral Vibe
+```
+
+Each command writes the MCP server config and a project instructions file telling the agent to use the `codiff_diff` MCP tool when creating pull requests:
+
+| Agent | MCP config | Instructions file |
+|---|---|---|
+| `claude` | `.mcp.json` | `CLAUDE.md` |
+| `codex` | `.codex/config.toml` | `AGENTS.md` |
+| `gemini` | `~/.gemini/settings.json` ¹ | `GEMINI.md` |
+| `vibe` | `~/.vibe/config.toml` ² | — |
+
+¹ Gemini CLI MCP config is global (not project-scoped). Restart Gemini CLI after running.
+² Mistral Vibe MCP config is global (not project-scoped). Restart Vibe after running.
+
+When creating a pull request, the agent calls `codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")` and embeds the returned diagram in the PR description. GitHub renders Mermaid natively — no plugin needed.
+
 ### CLI
 
 ```bash
@@ -139,30 +164,6 @@ codiff init --agent <agent>
 | `mermaid` | Two Mermaid `classDiagram` blocks — paste into any Markdown file or PR description |
 | `json` | Structured JSON — consumed by editor integrations (e.g. the VS Code extension) |
 
-### Agent integration (MCP + project instructions)
-
-Run once per project to configure your coding agent:
-
-```bash
-codiff init --agent claude      # Claude Code
-codiff init --agent codex       # OpenAI Codex CLI
-codiff init --agent gemini      # Gemini CLI
-codiff init --agent vibe        # Mistral Vibe
-```
-
-Each command writes the MCP server config and a project instructions file telling the agent to use the `codiff_diff` MCP tool when creating pull requests:
-
-| Agent | MCP config | Instructions file |
-|---|---|---|
-| `claude` | `.mcp.json` | `CLAUDE.md` |
-| `codex` | `.codex/config.toml` | `AGENTS.md` |
-| `gemini` | `~/.gemini/settings.json` ¹ | `GEMINI.md` |
-| `vibe` | `~/.vibe/config.toml` ² | — |
-
-¹ Gemini CLI MCP config is global (not project-scoped). Restart Gemini CLI after running.
-² Mistral Vibe MCP config is global (not project-scoped). Restart Vibe after running.
-
-When creating a pull request, the agent calls `codiff_diff(base_ref="main", head_ref="HEAD", format="mermaid")` and embeds the returned diagram in the PR description. GitHub renders Mermaid natively — no plugin needed.
 
 ## Reading the terminal output
 
@@ -195,10 +196,10 @@ When two changed classes in the same file are related, each class box shows a di
 
 ```
 ╭╌╌╌ PageAwarePreChunker ╌╌╌╮
-│ calls  PageAwarePreChunkBuilder  │
-│ ──────────────                   │
-│ + __init__                       │
-╰╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╯
+│ calls  PageAwareBuilder   │
+│ ──────────────            │
+│ + __init__                │
+╰╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╯
 ```
 
 Relationship types: `calls` (method calls to another class) and `inherits` (superclass relationship detected from class definitions).
