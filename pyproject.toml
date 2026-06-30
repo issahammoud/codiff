@@ -5,23 +5,37 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codiff"
 version = "0.1.0"
-description = "Structural call-graph diff for Python codebases"
+description = "Structural call-graph diff for codebases, built for coding agents"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Issa Hammoud", email = "issa.hammoud@outlook.com" }]
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Version Control",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "sqlalchemy>=2.0.25",
-    "networkx>=3.0",
-    "pydantic>=2.5.3",
     "tree-sitter>=0.24.0",
     "tree-sitter-python>=0.23.6",
-    "httpx>=0.27.1",
-    "python-dotenv>=1.0.0",
+    "tree-sitter-typescript>=0.23.2",
     "pathspec>=0.12.0",
     "rich>=13.0.0",
     "mcp>=1.0.0",
-    "tree-sitter-typescript>=0.23.2",
     "pyyaml>=6.0",
     "tomli-w>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/issahammoud/codiff"
+Repository = "https://github.com/issahammoud/codiff"
+"Bug Tracker" = "https://github.com/issahammoud/codiff/issues"
 
 [project.optional-dependencies]
 dev = [
