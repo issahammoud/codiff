@@ -62,6 +62,7 @@ def codiff_diff(
         head_ref=head_ref,
         include_tests=include_tests,
         include_deleted=include_deleted,
+        max_workers=1,
     )
     head_label = head_ref or "working tree"
 

@@ -209,9 +209,20 @@ _INIT_AGENTS = {
 
 
 def _run_init(repo_path: str, agent: str) -> None:
+    import subprocess
+
+    from codiff.diff.indexer import ensure_indexed
+
     repo_path = os.path.abspath(repo_path)
     print(f"\nConfiguring codiff for {agent} in {repo_path}\n")
     _INIT_AGENTS[agent](repo_path)
+
+    print("  Building initial call-graph index...")
+    try:
+        ensure_indexed(repo_path, "HEAD", max_workers=_DEFAULT_WORKERS)
+        print("  Index complete.\n")
+    except subprocess.CalledProcessError:
+        print("  Skipped: not a git repository. Index will be built on first diff.\n")
 
 
 def _run_diff(

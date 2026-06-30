@@ -11,7 +11,6 @@ appending it to _PARSERS — no other file changes required.
 """
 
 import logging
-import multiprocessing
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -167,35 +166,41 @@ def parse_repository(
         "[timing] file walk (collect): %.2fs  (%d files)", time.perf_counter() - t0, len(pending)
     )
 
-    # Phase 2: parse files across worker processes for true CPU parallelism.
-    # modules_dict is sent once per worker via the initializer — not once per task.
-    # chunksize batches multiple files per IPC round-trip to reduce pickle overhead.
+    # Phase 2: parse files. When max_workers <= 1, run inline in the calling
+    # process — no subprocess, no inherited file descriptors (required for MCP
+    # stdio servers where child processes inherit the JSON-RPC pipes and corrupt
+    # the channel). With multiple workers, use ProcessPoolExecutor as before.
     t0 = time.perf_counter()
-    chunksize = max(1, len(pending) // (max_workers * 8))
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        mp_context=multiprocessing.get_context("spawn"),
-        initializer=_init_mp_worker,
-        initargs=(modules_dict,),
-    ) as pool:
-        for result in pool.map(_parse_file_mp, pending, chunksize=chunksize):
-            if result is None:
-                continue
-            ext, rel, funcs, classes, imports, mod_doc = result
-            resolver_cls = ext_to_resolver[ext]
-            if mod_doc:
-                module_docstrings[rel] = mod_doc
-            resolver_funcs[resolver_cls].extend(funcs)
-            resolver_classes[resolver_cls].extend(classes)
-            resolver_imports[resolver_cls].update(imports)
-            for cls in classes:
-                if cls.docstring:
-                    class_docstrings[cls.name] = cls.docstring
+    if max_workers <= 1:
+        _init_mp_worker(modules_dict)
+        file_results = [_parse_file_mp(args) for args in pending]
+    else:
+        chunksize = max(1, len(pending) // (max_workers * 8))
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_init_mp_worker,
+            initargs=(modules_dict,),
+        ) as pool:
+            file_results = list(pool.map(_parse_file_mp, pending, chunksize=chunksize))
+
+    for result in file_results:
+        if result is None:
+            continue
+        ext, rel, funcs, classes, imports, mod_doc = result
+        resolver_cls = ext_to_resolver[ext]
+        if mod_doc:
+            module_docstrings[rel] = mod_doc
+        resolver_funcs[resolver_cls].extend(funcs)
+        resolver_classes[resolver_cls].extend(classes)
+        resolver_imports[resolver_cls].update(imports)
+        for cls in classes:
+            if cls.docstring:
+                class_docstrings[cls.name] = cls.docstring
 
     n_fresh = sum(len(f) for f in resolver_funcs.values())
     logger.debug(
-        "[timing] parse files (parallel, %d workers): %.2fs  (%d functions, %d classes)",
-        max_workers,
+        "[timing] parse files (%s): %.2fs  (%d functions, %d classes)",
+        f"{max_workers} workers" if max_workers > 1 else "sequential",
         time.perf_counter() - t0,
         n_fresh,
         sum(len(c) for c in resolver_classes.values()),
