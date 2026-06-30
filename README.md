@@ -104,7 +104,7 @@ The graph delta — added, modified, removed functions — is computed determini
 ## Installation
 
 ```bash
-pip install git+https://github.com/issahammoud/codiff.git
+pip install codiff
 ```
 
 ## Usage
